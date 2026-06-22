@@ -38,6 +38,21 @@ function flog(msg) {
 /** sessionId -> the terminal we matched, so a click can focus the right tab. */
 const sessionTerminals = new Map();
 
+/** sessionId -> { sessionId, name, state } — the live roster the dashboard shows. */
+const roster = new Map();
+
+// Map a Claude Code lifecycle hook to the agent state shown in the dashboard.
+function stateFromHook(hookEvent) {
+  switch (hookEvent) {
+    case 'UserPromptSubmit': return 'running';
+    case 'Stop': return 'done';
+    case 'Notification': return 'needsYou';
+    case 'SessionStart': return 'idle';
+    case 'SessionEnd': return 'gone';
+    default: return null;
+  }
+}
+
 let server;
 let output;
 
@@ -50,7 +65,10 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((closed) => {
       for (const [sid, term] of sessionTerminals) {
-        if (term === closed) sessionTerminals.delete(sid);
+        if (term === closed) {
+          sessionTerminals.delete(sid);
+          roster.delete(sid);
+        }
       }
     }),
     vscode.commands.registerCommand('claudeNotch.showStatus', () => {
@@ -71,6 +89,12 @@ function deactivate() {
 
 function startServer() {
   server = http.createServer((req, res) => {
+    // The app fetches the live roster on hover to render the dashboard.
+    if (req.method === 'GET' && req.url === '/roster') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([...roster.values()]));
+      return;
+    }
     if (req.method !== 'POST') {
       res.writeHead(405).end();
       return;
@@ -101,38 +125,50 @@ function startServer() {
 }
 
 async function handleEvent(data) {
-  const event = data.event || 'needs_attention';
+  const hookEvent = data.hookEvent || '';
   const pidChain = Array.isArray(data.pidChain) ? data.pidChain : [];
   const terminal = await findTerminal(pidChain);
 
-  // Scope: only ping for agents we can tie to a Cursor terminal tab. Background
-  // and non-Cursor sessions (a plain-terminal `claude`, the assistant's own
-  // session, etc.) match no tab and are ignored here.
+  // Scope: only track/ping agents tied to a Cursor terminal tab. Background and
+  // non-Cursor sessions (a plain-terminal `claude`, the assistant's own session,
+  // etc.) match no tab and are ignored here.
   if (!terminal) {
-    output.appendLine(`[${event}] no tab matched — ignored (not a Cursor-tab agent)`);
+    output.appendLine(`[${hookEvent}] no tab matched — ignored (not a Cursor-tab agent)`);
     return;
   }
 
-  if (data.sessionId) sessionTerminals.set(data.sessionId, terminal);
+  const sessionId = data.sessionId || '';
+  const name = (terminal.name && terminal.name.trim()) || folderOf(data.cwd) || 'agent';
+  if (sessionId) sessionTerminals.set(sessionId, terminal);
 
-  // Focus rule (end-of-turn only): a "done" ping fires only when you'd need to
-  // refocus — i.e. you are NOT already looking at this exact tab. If the Cursor
-  // window is focused AND this terminal is the active one, you can see it, so stay
-  // quiet. This kills the constant end-of-turn pings while you work in that tab.
-  // "needs_attention" always pings — the agent is blocked on you, don't miss it.
-  if (event === 'done') {
-    const viewing =
-      vscode.window.state.focused && vscode.window.activeTerminal === terminal;
-    if (viewing) {
-      output.appendLine(`[done] suppressed — already viewing "${terminal.name}"`);
-      return;
+  // Keep the dashboard roster in sync with this lifecycle event.
+  const state = stateFromHook(hookEvent);
+  if (sessionId && state) {
+    if (state === 'gone') {
+      roster.delete(sessionId);
+      sessionTerminals.delete(sessionId);
+    } else {
+      roster.set(sessionId, { sessionId, name, state });
     }
   }
 
-  const name = (terminal.name && terminal.name.trim()) || folderOf(data.cwd) || 'agent';
-  output.appendLine(`[${event}] ping name="${name}" session=${data.sessionId || '?'}`);
-
-  fireNotch({ name, event, message: data.message || '', sessionId: data.sessionId || '' });
+  // Pings: only the two attention events. needs_attention always fires; done
+  // respects the focus rule (quiet while you're already looking at that tab).
+  if (hookEvent === 'Notification' || hookEvent === 'Stop') {
+    const event = hookEvent === 'Notification' ? 'needs_attention' : 'done';
+    if (event === 'done') {
+      const viewing =
+        vscode.window.state.focused && vscode.window.activeTerminal === terminal;
+      if (viewing) {
+        output.appendLine(`[done] suppressed — already viewing "${name}"`);
+        return;
+      }
+    }
+    output.appendLine(`[${event}] ping name="${name}" session=${sessionId}`);
+    fireNotch({ name, event, message: data.message || '', sessionId });
+  } else {
+    output.appendLine(`[${hookEvent}] roster: name="${name}" state=${state}`);
+  }
 }
 
 function folderOf(cwd) {

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Live state of one agent (one Claude Code session in one terminal tab).
-enum AgentState: String, Codable {
+enum AgentState: String, Codable, Sendable {
     case running, done, needsYou, idle
 
     var color: Color {
@@ -30,7 +30,7 @@ enum AgentState: String, Codable {
     }
 }
 
-struct Agent: Identifiable, Equatable {
+struct Agent: Identifiable, Equatable, Sendable {
     let id: String        // sessionId
     var name: String      // the tab name you set
     var state: AgentState
@@ -49,6 +49,8 @@ final class RosterStore: ObservableObject {
     var done: Int     { agents.lazy.filter { $0.state == .done }.count }
     var needsYou: Int { agents.lazy.filter { $0.state == .needsYou }.count }
     var hasAny: Bool  { !agents.isEmpty }
+
+    func apply(_ agents: [Agent]) { self.agents = agents }
 
     func loadFake() {
         agents = [

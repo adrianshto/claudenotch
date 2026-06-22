@@ -3,10 +3,13 @@
 > **Agents:** read `CLAUDE.md` first — it's the canonical map (architecture, every
 > file + system location, invariants, rebuild commands). This README is human setup.
 
-Notch notifications for Claude Code agents running in **Cursor** terminals. When an
-agent needs your attention (or finishes a turn), you get a ping **in the MacBook
-notch**, labelled with the name **you** gave that terminal tab (right-click → Rename).
-Click the ping to jump straight to that tab.
+Surfaces your Claude Code agents (running in **Cursor** terminals) on the MacBook
+**notch**, two ways — both with the same DynamicNotchKit animation:
+
+- **Pings** — a notch drop-down when an agent needs you or finishes a turn, labelled
+  with the name **you** gave that terminal tab (right-click → Rename). Click → focus it.
+- **Dashboard** — flick your cursor to the notch and a notch drops down listing **all**
+  your agents with live state (running / done / needs-you). Click a row → focus that tab.
 
 ## When it pings
 
@@ -18,21 +21,28 @@ Click the ping to jump straight to that tab.
 - **Scope:** only agents tied to a **Cursor terminal tab** ping. Background or
   non-Cursor `claude` sessions match no tab and are ignored.
 
-See `PROTOCOL.md` for the wire format between the three pieces:
+## The dashboard
+
+Move your cursor up onto the **notch** → the dashboard drops down with all your
+agents (status counts, then each agent by name + state). Click a row to focus that
+tab; move your cursor away and it retracts. It's **summon-on-hover** (not always-on),
+so the notch stays clean when you're not looking. It shows the agents in the **one
+Cursor window** that owns the connection today (multi-window is the next phase).
+
+See `PROTOCOL.md` for the exact wire format. The shape:
 
 ```
-Claude Code hook ──POST /event──▶ Cursor extension ──open claudenotch://──▶ Notch app
- (in the terminal)                (matches tab, reads                       (draws notch)
-                                    its name)  ▲                                  │
-                                               └────────── POST /focus ◀──────────┘
-                                                            (on click)
+Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://notify─▶ App (pings)
+ (in the terminal)              (39247: match tab,   ◀──POST /focus──  (click → reveal tab)
+                                 name, live roster)   App (dashboard) ──GET /roster──▶ 39247
 ```
 
 ## What's already installed (done by setup)
 
 - ✅ **Hook** — `~/.claude-notch/notify-hook.js`, wired into `~/.claude/settings.json`
-  (`Notification` + `Stop`, async so it never delays an agent). Tested.
-- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.2.0).
+  on 5 events (`Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`,
+  `SessionEnd`), async so it never delays an agent.
+- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.4.0).
 - ✅ **Notch app** — built at `app/ClaudeNotch.app` (no Xcode project needed).
 
 ## 1. The notch app
@@ -68,20 +78,22 @@ then re-run the install command.
 
 ## Test
 
-1. **Restart Cursor** — activates the extension and makes open sessions pick up the
-   new global hooks.
-2. **Brain test (no app needed):** rename a terminal tab (right-click → Rename →
-   e.g. `frontend`), run `claude` in it, and trigger a permission prompt or let it
-   finish. You should see a toast **"🔔 frontend needs you / finished"** with a
-   **Focus tab** button — click it and the tab focuses. That proves matching + name +
-   focus.
-3. **Notch:** with `ClaudeNotch.app` running, the same triggers render in the notch.
-   Click the notch → focuses the tab.
+1. **Reload Cursor** (⌘⇧P → "Developer: Reload Window") so the extension + hooks are live.
+2. **Pings:** rename a terminal tab (right-click → Rename → e.g. `frontend`), run
+   `claude` in it; trigger a permission prompt, or switch away and let it finish a turn.
+   The notch drops down labelled `frontend`; click it → Cursor comes forward on that tab.
+3. **Dashboard:** with at least one `claude` session running, **hover the notch** → it
+   drops down listing your agents + live state. Click a row → focuses that tab.
+   (`curl -s http://127.0.0.1:39247/roster` shows the raw roster.)
 
 ## Troubleshooting
 
 - **Nothing happens:** "Claude Notch: Show Status" should log `listening
-  127.0.0.1:39247`. Check `/hooks` lists the Notification + Stop hooks.
+  127.0.0.1:39247`. Check `/hooks` lists the 5 hooks (Notification, Stop, SessionStart,
+  UserPromptSubmit, SessionEnd).
+- **Dashboard empty / agent missing:** the roster fills from lifecycle events, so a
+  session shows after its first event — send it a prompt. `curl http://127.0.0.1:39247/roster`
+  to inspect. Only the window that owns port 39247 is tracked (multi-window is pending).
 - **No ping at all for a Cursor agent:** "Show Status" output channel logs the
   decision per event — `ping name=…`, `suppressed — already viewing …`, or
   `no tab matched — ignored`. If it says *no tab matched*, make sure `claude` runs

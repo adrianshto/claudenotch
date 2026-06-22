@@ -12,18 +12,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menubar-only accessory: no dock icon, never steals focus.
         NSApp.setActivationPolicy(.accessory)
         dashboard = DashboardController(store: roster) { [weak self] agent in
-            Log.write("dashboard pick: \(agent.name) — focus wiring lands with the hub")
-            self?.dashboard.hide()
+            guard let self else { return }
+            Log.write("dashboard pick: \(agent.name) session=\(agent.id) → focus")
+            self.raiseCursor()
+            Focus.request(sessionId: agent.id)
+            self.dashboard.hide()
         }
 
-        // Summon-on-hover: flick the cursor to the notch → dashboard drops down.
+        // Summon-on-hover: flick the cursor to the notch → fetch the live roster
+        // and drop the dashboard down.
         detector = HoverDetector()
         detector.onEnter = { [weak self] in
             guard let self else { return }
             self.detectorHovered = true
-            if self.roster.agents.isEmpty { self.roster.loadFake() }   // demo data until the hub feeds real state
-            self.dashboard.show()
-            self.watchForRetract()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.roster.apply(await RosterFetcher.fetch())
+                self.dashboard.show()
+                self.watchForRetract()
+            }
         }
         detector.onExit = { [weak self] in self?.detectorHovered = false }
         detector.start()
@@ -73,8 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Dev/demo trigger: `open "claudenotch://dashboard"` toggles the dashboard.
         if url.host == "dashboard" {
             Log.write("url received: dashboard toggle (shown=\(dashboard.shown))")
-            if roster.agents.isEmpty { roster.loadFake() }
-            dashboard.toggle()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.roster.apply(await RosterFetcher.fetch())
+                self.dashboard.toggle()
+            }
             return
         }
 
