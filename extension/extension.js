@@ -1,0 +1,168 @@
+'use strict';
+
+/*
+ * Claude Notch — Cursor / VS Code extension (the "brain").
+ *
+ *  - Listens on 127.0.0.1:39247 for events from the Claude Code hook.
+ *  - Matches the hook's PID chain to a terminal's processId, reads that tab's
+ *    name (the name YOU set via right-click -> Rename), and fires the notch
+ *    app via the claudenotch:// URL scheme.
+ *  - On click, the app POSTs back to /focus and we reveal + focus that tab.
+ *
+ * Plain JS on purpose: `vscode` is provided by the host at runtime, and
+ * everything else is a Node built-in, so there are no dependencies to install.
+ */
+
+const vscode = require('vscode');
+const http = require('http');
+const { exec } = require('child_process');
+
+const HOST = '127.0.0.1';
+const PORT = 39247;
+
+/** sessionId -> the terminal we matched, so a click can focus the right tab. */
+const sessionTerminals = new Map();
+
+let server;
+let output;
+
+function activate(context) {
+  output = vscode.window.createOutputChannel('Claude Notch');
+  context.subscriptions.push(output);
+
+  startServer();
+
+  context.subscriptions.push(
+    vscode.window.onDidCloseTerminal((closed) => {
+      for (const [sid, term] of sessionTerminals) {
+        if (term === closed) sessionTerminals.delete(sid);
+      }
+    }),
+    vscode.commands.registerCommand('claudeNotch.showStatus', () => {
+      output.show();
+      output.appendLine(
+        `status: listening ${HOST}:${PORT} | tracked sessions: ${sessionTerminals.size} | open terminals: ${vscode.window.terminals.length}`
+      );
+    }),
+    { dispose: () => server && server.close() }
+  );
+
+  output.appendLine(`Claude Notch active. Listening on ${HOST}:${PORT}.`);
+}
+
+function deactivate() {
+  if (server) server.close();
+}
+
+function startServer() {
+  server = http.createServer((req, res) => {
+    if (req.method !== 'POST') {
+      res.writeHead(405).end();
+      return;
+    }
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        if (req.url === '/event') {
+          await handleEvent(data);
+        } else if (req.url === '/focus') {
+          focusSession(data && data.sessionId);
+        }
+        res.writeHead(200).end('ok');
+      } catch (e) {
+        output.appendLine(`error handling ${req.url}: ${String(e)}`);
+        res.writeHead(400).end('bad request');
+      }
+    });
+  });
+  server.on('error', (e) => {
+    output.appendLine(
+      `server error: ${String(e)} — another Cursor window may already own port ${PORT}.`
+    );
+  });
+  server.listen(PORT, HOST);
+}
+
+async function handleEvent(data) {
+  const event = data.event || 'needs_attention';
+  const pidChain = Array.isArray(data.pidChain) ? data.pidChain : [];
+  const terminal = await findTerminal(pidChain);
+
+  // Scope: only ping for agents we can tie to a Cursor terminal tab. Background
+  // and non-Cursor sessions (a plain-terminal `claude`, the assistant's own
+  // session, etc.) match no tab and are ignored here.
+  if (!terminal) {
+    output.appendLine(`[${event}] no tab matched — ignored (not a Cursor-tab agent)`);
+    return;
+  }
+
+  if (data.sessionId) sessionTerminals.set(data.sessionId, terminal);
+
+  // Focus rule (end-of-turn only): a "done" ping fires only when you'd need to
+  // refocus — i.e. you are NOT already looking at this exact tab. If the Cursor
+  // window is focused AND this terminal is the active one, you can see it, so stay
+  // quiet. This kills the constant end-of-turn pings while you work in that tab.
+  // "needs_attention" always pings — the agent is blocked on you, don't miss it.
+  if (event === 'done') {
+    const viewing =
+      vscode.window.state.focused && vscode.window.activeTerminal === terminal;
+    if (viewing) {
+      output.appendLine(`[done] suppressed — already viewing "${terminal.name}"`);
+      return;
+    }
+  }
+
+  const name = (terminal.name && terminal.name.trim()) || folderOf(data.cwd) || 'agent';
+  output.appendLine(`[${event}] ping name="${name}" session=${data.sessionId || '?'}`);
+
+  fireNotch({ name, event, message: data.message || '', sessionId: data.sessionId || '' });
+}
+
+function folderOf(cwd) {
+  return cwd ? String(cwd).split('/').filter(Boolean).pop() : '';
+}
+
+async function findTerminal(pidChain) {
+  if (!pidChain.length) return undefined;
+  const terms = vscode.window.terminals;
+  const pids = await Promise.all(
+    terms.map((t) => Promise.resolve(t.processId).then((p) => p, () => undefined))
+  );
+  for (let i = 0; i < terms.length; i++) {
+    if (pids[i] !== undefined && pidChain.includes(pids[i])) return terms[i];
+  }
+  return undefined;
+}
+
+function fireNotch(p) {
+  const url =
+    'claudenotch://notify' +
+    `?name=${encodeURIComponent(p.name)}` +
+    `&event=${encodeURIComponent(p.event)}` +
+    `&message=${encodeURIComponent(p.message)}` +
+    `&sessionId=${encodeURIComponent(p.sessionId)}`;
+
+  exec(`open ${shellQuote(url)}`, (err) => {
+    if (!err) return;
+    // App not installed/registered yet — never lose a ping; show a toast.
+    output.appendLine(`open failed (${err.message}); falling back to toast.`);
+    const verb = p.event === 'done' ? 'finished' : 'needs you';
+    vscode.window.showInformationMessage(`🔔 ${p.name} ${verb}`, 'Focus tab').then((choice) => {
+      if (choice === 'Focus tab') focusSession(p.sessionId);
+    });
+  });
+}
+
+function focusSession(sessionId) {
+  if (!sessionId) return;
+  const term = sessionTerminals.get(sessionId);
+  if (term) term.show(false); // reveal AND take focus
+}
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+module.exports = { activate, deactivate };

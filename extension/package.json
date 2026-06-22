@@ -1,0 +1,25 @@
+{
+  "name": "claude-notch",
+  "displayName": "Claude Notch",
+  "description": "Notch notifications when a Claude Code agent in a Cursor terminal needs your attention.",
+  "version": "0.2.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeNotch.showStatus",
+        "title": "Claude Notch: Show Status"
+      }
+    ]
+  }
+}
