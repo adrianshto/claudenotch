@@ -3,12 +3,56 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let notifier = NotchNotifier()
+    private let roster = RosterStore()
+    private var dashboard: DashboardController!
+    private var detector: HoverDetector!
+    private var detectorHovered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menubar-only accessory: no dock icon, never steals focus.
         NSApp.setActivationPolicy(.accessory)
+        dashboard = DashboardController(store: roster) { [weak self] agent in
+            Log.write("dashboard pick: \(agent.name) — focus wiring lands with the hub")
+            self?.dashboard.hide()
+        }
+
+        // Summon-on-hover: flick the cursor to the notch → dashboard drops down.
+        detector = HoverDetector()
+        detector.onEnter = { [weak self] in
+            guard let self else { return }
+            self.detectorHovered = true
+            if self.roster.agents.isEmpty { self.roster.loadFake() }   // demo data until the hub feeds real state
+            self.dashboard.show()
+            self.watchForRetract()
+        }
+        detector.onExit = { [weak self] in self?.detectorHovered = false }
+        detector.start()
+
         Log.write("app launched")
     }
+
+    /// Retract the dashboard once the cursor is neither over the notch nor the
+    /// expanded dashboard. Polls briefly so moving from notch → list doesn't hide it.
+    private func watchForRetract() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.dashboard.shown else { return }
+                if self.detectorHovered || self.dashboard.isHovering {
+                    self.watchForRetract()        // still active → keep watching
+                } else {
+                    self.dashboard.hide()
+                }
+            }
+        }
+    }
+
+    /// Demo: populate fake agents and show the dashboard so we can see the animation.
+    func showDashboardDemo() {
+        roster.loadFake()
+        dashboard.show()
+    }
+
+    func hideDashboard() { dashboard.hide() }
 
     /// Entry point for `open "claudenotch://notify?..."` fired by the Cursor extension.
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -25,6 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handle(_ url: URL) {
         guard url.scheme == "claudenotch" else { return }
+
+        // Dev/demo trigger: `open "claudenotch://dashboard"` toggles the dashboard.
+        if url.host == "dashboard" {
+            Log.write("url received: dashboard toggle (shown=\(dashboard.shown))")
+            if roster.agents.isEmpty { roster.loadFake() }
+            dashboard.toggle()
+            return
+        }
+
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func q(_ key: String) -> String { items.first { $0.name == key }?.value ?? "" }
 

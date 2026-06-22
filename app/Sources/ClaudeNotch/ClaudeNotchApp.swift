@@ -9,6 +9,9 @@ struct ClaudeNotchApp: App {
         MenuBarExtra("Claude Notch", systemImage: "bell.badge.fill") {
             Button("Test notch ping") { appDelegate.testPing() }
             Divider()
+            Button("Show dashboard (demo)") { appDelegate.showDashboardDemo() }
+            Button("Hide dashboard") { appDelegate.hideDashboard() }
+            Divider()
             Button("Quit Claude Notch") { NSApplication.shared.terminate(nil) }
         }
     }
