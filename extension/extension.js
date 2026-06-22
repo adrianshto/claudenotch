@@ -15,10 +15,25 @@
 
 const vscode = require('vscode');
 const http = require('http');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { exec } = require('child_process');
 
 const HOST = '127.0.0.1';
 const PORT = 39247;
+
+// Append-only file log (sibling to the app's ~/.claude-notch/app.log) so the
+// focus path is observable from outside Cursor's output channel.
+const LOG_FILE = path.join(os.homedir(), '.claude-notch', 'ext.log');
+function flog(msg) {
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${msg}\n`);
+  } catch (_) {
+    /* logging must never break the extension */
+  }
+}
 
 /** sessionId -> the terminal we matched, so a click can focus the right tab. */
 const sessionTerminals = new Map();
@@ -156,9 +171,17 @@ function fireNotch(p) {
 }
 
 function focusSession(sessionId) {
-  if (!sessionId) return;
+  if (!sessionId) {
+    flog('focus: empty sessionId');
+    return;
+  }
   const term = sessionTerminals.get(sessionId);
-  if (term) term.show(false); // reveal AND take focus
+  if (!term) {
+    flog(`focus: NO terminal mapped for session=${sessionId} (known sessions: ${sessionTerminals.size})`);
+    return;
+  }
+  flog(`focus: revealing tab "${term.name}" for session=${sessionId}`);
+  term.show(false); // reveal + focus the tab within the Cursor window
 }
 
 function shellQuote(s) {

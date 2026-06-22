@@ -41,9 +41,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? message
             : (isDone ? "Finished — click to open." : "Needs your attention — click to jump in.")
 
-        notifier.notify(title: name, message: body, systemImage: symbol, sound: sound) {
+        notifier.notify(title: name, message: body, systemImage: symbol, sound: sound) { [weak self] in
             Log.write("notch tapped — requesting focus for session=\(sessionId)")
+            self?.raiseCursor()
             Focus.request(sessionId: sessionId)
+        }
+    }
+
+    /// Bring Cursor to the front so the tab the extension reveals is actually
+    /// visible when you click the notch from another app.
+    private func raiseCursor() {
+        let apps = NSWorkspace.shared.runningApplications
+        // Match the MAIN Cursor app (a regular UI app) — NOT helper XPC services
+        // like "CursorUIViewService" whose bundle id also contains "cursor".
+        let cursor = apps.first { $0.activationPolicy == .regular && $0.localizedName == "Cursor" }
+            ?? apps.first { $0.activationPolicy == .regular && ($0.bundleIdentifier?.lowercased().contains("cursor") ?? false) }
+        if let cursor {
+            cursor.activate(options: [.activateAllWindows])
+            Log.write("raiseCursor: activated \(cursor.localizedName ?? "?") [\(cursor.bundleIdentifier ?? "?")]")
+        } else {
+            Log.write("raiseCursor: main Cursor app not found")
         }
     }
 }
