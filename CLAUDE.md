@@ -44,11 +44,12 @@ Claude Code hook ──POST /event──▶ Cursor extension ──open claudeno
      (`{sessionId}` → **raises the owning window across Spaces** via `cursor
      --reuse-window <folder>`, then reveals the terminal locally OR routes the reveal to
      the owning follower's callback port), `POST /register` + `POST /deregister` (followers).
-   - Each roster entry: `{sessionId, name, state, windowId, window, folder, pid}` —
+   - Each roster entry: `{sessionId, name, state, windowId, window, folder, pid, doneAt}` —
      `window` is the human label (project/folder name via `vscode.workspace.name`) the
      dashboard groups by; `folder` is the workspace's filesystem path, used to raise that
-     exact window (see "Window raising" below). Followers report their `folder` in
-     `/register` so the leader can raise any window.
+     exact window (see "Window raising" below); `doneAt` is the epoch-ms moment the agent
+     entered `done` (omitted otherwise), so the dashboard can flag a *fresh* finish.
+     Followers report their `folder` in `/register` so the leader can raise any window.
    - Logs role + focus decisions to `~/.claude-notch/ext.log`.
 3. **App** (`app/`, SwiftUI menu-bar-only, built by `build-app.sh` → `ClaudeNotch.app`):
    - **Pings**: `NotchNotifier` shows a DynamicNotch on `claudenotch://notify`; tap →
@@ -96,6 +97,11 @@ single-instance-over-pipe model; harmless, only one real instance runs.
   (unless already `done` → stays `done`, no ping), `SessionStart`→idle, `SessionEnd`→removed.
 - **Dashboard is summon-on-hover** (not always-on) — keeps the notch clean and sidesteps
   DynamicNotchKit's always-on window eating clicks across the top quarter of the screen.
+- **Recently-done is visually distinct**: an agent that entered `done` within the last
+  **2 minutes** (`Agent.doneRecently`, from `doneAt`) renders **purple** + label "just
+  done"; older `done` stays yellow. Same position/grouping — just the hue — so a fresh
+  finish is findable in a pile of `done` rows. Render-time only: `done` is still one state
+  (no new `AgentState` case, counts unchanged); computed per-fetch against the clock.
 
 ## Files — IN-FOLDER SOURCE vs LIVE SYSTEM COPIES
 
@@ -105,7 +111,7 @@ until you rebuild/reinstall (commands below).
 | Piece | Source | Live copy the OS/Cursor/Claude uses |
 |---|---|---|
 | Hook | `hook/notify-hook.js` | `~/.claude-notch/notify-hook.js` + `hooks` block in `~/.claude/settings.json` (5 events) |
-| Extension | `extension/extension.js`, `package.json` | `~/.cursor/extensions/local.claude-notch-<ver>` (currently 0.9.0) |
+| Extension | `extension/extension.js`, `package.json` | `~/.cursor/extensions/local.claude-notch-<ver>` (currently 0.10.0) |
 | App | `app/Sources/ClaudeNotch/*.swift`, `app/Package.swift`, `app/Info.plist` | **runs from `/Applications/ClaudeNotch.app`** (auto-starts at login via LaunchAgent `~/Library/LaunchAgents/com.casper.claudenotch.plist`); built in `app/ClaudeNotch.app`, deployed there by `build-app.sh` |
 
 App source files: `ClaudeNotchApp` (MenuBarExtra), `AppDelegate` (URL handling, hover

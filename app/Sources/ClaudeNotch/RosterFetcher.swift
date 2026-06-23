@@ -7,6 +7,7 @@ enum RosterFetcher {
         let name: String
         let state: String
         let window: String?
+        let doneAt: Double?
     }
 
     /// Fetches the current roster (empty on any failure).
@@ -21,7 +22,7 @@ enum RosterFetcher {
         return items.map {
             Agent(id: $0.sessionId, name: $0.name,
                   state: AgentState(rawValue: $0.state) ?? .idle,
-                  windowId: "", pid: 0, window: $0.window ?? "")
+                  windowId: "", pid: 0, window: $0.window ?? "", doneAt: $0.doneAt)
         }
     }
 }

@@ -32,6 +32,10 @@ window **brings that window to the front — even on another desktop/Space or fu
 — and reveals its terminal (via Cursor's own `--reuse-window`; you'll see a brief Cursor
 icon flash in the dock as it does, which is harmless).
 
+An agent that **just finished** (went done in the last ~2 min) shows up **purple** with a
+"just done" label, so it's easy to spot the fresh finish among a stack of older (yellow)
+`done` agents.
+
 See `PROTOCOL.md` for the exact wire format. The shape:
 
 ```
@@ -45,7 +49,7 @@ Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://not
 - ✅ **Hook** — `~/.claude-notch/notify-hook.js`, wired into `~/.claude/settings.json`
   on 5 events (`Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`,
   `SessionEnd`), async so it never delays an agent.
-- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.9.0).
+- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.10.0).
 - ✅ **Notch app** — installed at `/Applications/ClaudeNotch.app` and **auto-starts at
   login** (LaunchAgent `com.casper.claudenotch`). Built from `app/` (no Xcode project needed).
 

@@ -37,6 +37,20 @@ struct Agent: Identifiable, Equatable, Sendable {
     var windowId: String
     var pid: Int
     var window: String = ""   // human label for the Cursor window (its project/folder)
+    var doneAt: Double? = nil // epoch ms when it entered `done` (nil unless done)
+
+    /// True if it finished within the last 2 minutes — rendered in a distinct hue so a
+    /// fresh finish stands out from a pile of older `done` agents.
+    var doneRecently: Bool {
+        guard state == .done, let doneAt else { return false }
+        return Date().timeIntervalSince1970 * 1000 - doneAt < 120_000
+    }
+
+    /// Dot/label color: a just-finished agent reads purple; everything else uses its
+    /// state color (running green / done yellow / needs-you red / idle gray).
+    var displayColor: Color {
+        doneRecently ? Color(red: 0.72, green: 0.55, blue: 1.0) : state.color
+    }
 }
 
 /// The single source of truth the dashboard renders. Fed by the hub (hook +

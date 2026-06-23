@@ -224,7 +224,16 @@ async function handleEvent(data) {
   const state = stateFromHook(hookEvent);
   if (sessionId && state) {
     if (state === 'gone') { roster.delete(sessionId); localSessions.delete(sessionId); }
-    else roster.set(sessionId, { sessionId, name, state, windowId, window: label, folder, pid });
+    else {
+      // Stamp the moment an agent ENTERS `done` (preserve it if it was already done),
+      // so the dashboard can flag a freshly-finished agent distinctly from old ones.
+      const prev = roster.get(sessionId);
+      let doneAt;
+      if (state === 'done') {
+        doneAt = (prev && prev.state === 'done' && prev.doneAt) ? prev.doneAt : Date.now();
+      }
+      roster.set(sessionId, { sessionId, name, state, windowId, window: label, folder, pid, doneAt });
+    }
   }
 
   if (hookEvent === 'Notification' || hookEvent === 'Stop') {

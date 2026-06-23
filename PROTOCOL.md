@@ -77,13 +77,15 @@ GLOBAL roster across all windows (see §6).
 ```jsonc
 [
   { "sessionId": "b1f2…", "name": "frontend",   "state": "running",  "windowId": "64095-ixxrla", "window": "code-project",    "folder": "/Users/casper/code-project",    "pid": 33263 },
-  { "sessionId": "c3d4…", "name": "db-migrate", "state": "needsYou", "windowId": "64491-rlwv9d", "window": "writing-project", "folder": "/Users/casper/writing-project", "pid": 64731 }
+  { "sessionId": "c3d4…", "name": "db-migrate", "state": "done",     "windowId": "64491-rlwv9d", "window": "writing-project", "folder": "/Users/casper/writing-project", "pid": 64731, "doneAt": 1782189000000 }
 ]
 ```
 
 `windowId` = internal per-window id (focus routing); `window` = human label (the
 window's project/folder name) the dashboard groups by; `folder` = the workspace's
-filesystem path, passed to `cursor --reuse-window` to raise that exact window (§3).
+filesystem path, passed to `cursor --reuse-window` to raise that exact window (§3);
+`doneAt` = epoch-ms when the agent entered `done` (present only for `done` entries) — the
+dashboard renders a finish within the last 2 min in purple to set it apart from old ones.
 
 ## 5. Dev/demo trigger  `open "claudenotch://dashboard"`
 

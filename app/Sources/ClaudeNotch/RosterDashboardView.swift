@@ -68,14 +68,14 @@ private struct AgentRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Circle().fill(agent.state.color).frame(width: 7, height: 7)
+            Circle().fill(agent.displayColor).frame(width: 7, height: 7)
             Text(agent.name)
                 .foregroundStyle(.white)
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
             Spacer(minLength: 16)
-            Text(agent.state.label)
-                .foregroundStyle(.white.opacity(0.5))
+            Text(agent.doneRecently ? "just done" : agent.state.label)
+                .foregroundStyle(agent.doneRecently ? agent.displayColor : .white.opacity(0.5))
                 .font(.system(size: 11))
         }
         .padding(.horizontal, 10)
