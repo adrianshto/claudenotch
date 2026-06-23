@@ -49,6 +49,9 @@ if [ -d "$DEPLOYED" ] || [ "${1:-}" = "--deploy" ]; then
   rm -rf "$DEPLOYED"
   cp -R "$APP" "$DEPLOYED"
   "$LSREGISTER" -f "$DEPLOYED" || true
+  # Don't let the local build copy compete as a claudenotch:// handler — only the
+  # /Applications copy should be registered.
+  "$LSREGISTER" -u "$PWD/$APP" 2>/dev/null || true
   echo "==> done: $DEPLOYED  (built copy: $PWD/$APP)"
   echo "    Restart the running app:  launchctl kickstart -k gui/\$(id -u)/com.casper.claudenotch"
 else
