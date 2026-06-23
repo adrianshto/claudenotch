@@ -50,6 +50,8 @@ let callbackPort = 0;
 const roster = new Map();         // sessionId -> { sessionId, name, state, windowId, pid }
 const followers = new Map();      // windowId  -> { callbackPort, terminals:[{pid,name}], focused, activeTerminalPid, lastSeen }
 const localSessions = new Map();  // sessionId -> Terminal (this window's own)
+let pendingPings = [];            // pings queued for the app to pull via GET /pings (long-poll)
+let pingWaiter = null;            // { res, timer } when the app is parked waiting for a ping
 
 function stateFromHook(h) {
   switch (h) {
@@ -151,6 +153,7 @@ function leaderHandler(req, res) {
     res.end(JSON.stringify([...roster.values()]));
     return;
   }
+  if (req.method === 'GET' && req.url === '/pings') { handlePingPoll(res); return; }
   if (req.method !== 'POST') { res.writeHead(405).end(); return; }
   readBody(req).then((data) => {
     if (req.url === '/event') return handleEvent(data).then(() => ok(res));
@@ -193,7 +196,7 @@ async function handleEvent(data) {
   const pidChain = Array.isArray(data.pidChain) ? data.pidChain : [];
   const sessionId = data.sessionId || '';
 
-  let windowId, name, pid, viewing, label, folder;
+  let windowId, name, pid, windowFocused, label, folder;
   const local = await findLocalTerminal(pidChain);
   if (local) {
     windowId = WINDOW_ID;
@@ -202,14 +205,16 @@ async function handleEvent(data) {
     name = (local.name && local.name.trim()) || folderOf(data.cwd) || 'agent';
     pid = await safePid(local);
     if (sessionId) localSessions.set(sessionId, local);
-    viewing = vscode.window.state.focused && vscode.window.activeTerminal === local;
+    // Is THIS agent's window the one you're looking at? (Whole window, not just the
+    // active tab — so a window with several agents goes quiet while you work in it.)
+    windowFocused = vscode.window.state.focused;
   } else {
     const f = resolveFollower(pidChain);
     if (!f) { output.appendLine(`[${hookEvent}] no tab matched (any window)`); return; }
     windowId = f.windowId; name = f.name; pid = f.pid;
     label = f.follower.label || 'window';
     folder = f.follower.folder || '';
-    viewing = !!(f.follower.focused && f.follower.activeTerminalPid === pid);
+    windowFocused = !!f.follower.focused;
   }
 
   // A Notification arriving while the agent is already `done` is just Claude
@@ -238,12 +243,10 @@ async function handleEvent(data) {
 
   if (hookEvent === 'Notification' || hookEvent === 'Stop') {
     const event = hookEvent === 'Notification' ? 'needs_attention' : 'done';
-    if (event === 'done' && viewing) {
-      output.appendLine(`[done] suppressed — already viewing "${name}"`);
-      return;
-    }
-    output.appendLine(`[${event}] ping "${name}" window=${windowId} session=${sessionId}`);
-    fireNotch({ name, event, message: data.message || '', sessionId, window: label });
+    // Always fire; the app decides whether to actually surface it, from its "quiet the
+    // focused window" toggle + whether this agent's window was focused (sent below).
+    output.appendLine(`[${event}] ping "${name}" window=${windowId} focused=${windowFocused} session=${sessionId}`);
+    fireNotch({ name, event, message: data.message || '', sessionId, window: label, focused: windowFocused });
   } else {
     output.appendLine(`[${hookEvent}] roster "${name}" state=${state} window=${windowId}`);
   }
@@ -398,22 +401,44 @@ function raiseWindow(folder) {
   });
 }
 
+// Queue a ping for the app to pull. We deliberately do NOT `open` a URL: launching the
+// app via a URL scheme foregrounds it and steals key focus from whatever you're typing.
+// Instead the app long-polls GET /pings (below) and shows/suppresses the notch itself,
+// without ever being brought to the front.
 function fireNotch(p) {
-  const url =
-    'claudenotch://notify' +
-    `?name=${encodeURIComponent(p.name)}` +
-    `&event=${encodeURIComponent(p.event)}` +
-    `&message=${encodeURIComponent(p.message)}` +
-    `&sessionId=${encodeURIComponent(p.sessionId)}` +
-    `&window=${encodeURIComponent(p.window || '')}`;
-  exec(`open ${shellQuote(url)}`, (err) => {
-    if (!err) return;
-    output.appendLine(`open failed (${err.message}); toast fallback.`);
-    const verb = p.event === 'done' ? 'finished' : 'needs you';
-    vscode.window.showInformationMessage(`🔔 ${p.name} ${verb}`, 'Focus tab').then((c) => {
-      if (c === 'Focus tab') focusSession(p.sessionId);
-    });
-  });
+  const ping = {
+    name: p.name, event: p.event, message: p.message || '',
+    sessionId: p.sessionId, window: p.window || '', focused: !!p.focused, ts: Date.now(),
+  };
+  if (pingWaiter) {
+    // App is parked on a long-poll — hand it the ping immediately.
+    clearTimeout(pingWaiter.timer);
+    const w = pingWaiter; pingWaiter = null;
+    try {
+      w.res.writeHead(200, { 'Content-Type': 'application/json' });
+      w.res.end(JSON.stringify([ping]));
+      return;
+    } catch (_) { /* connection gone — fall through and queue it */ }
+  }
+  pendingPings.push(ping);
+  if (pendingPings.length > 20) pendingPings.shift();   // cap; drop oldest
+}
+
+// App long-poll: return queued pings at once, else hold the connection up to 25s so a
+// ping arriving meanwhile is delivered instantly (no busy polling, no focus steal).
+function handlePingPoll(res) {
+  if (pendingPings.length) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(pendingPings));
+    pendingPings = [];
+    return;
+  }
+  if (pingWaiter) { try { pingWaiter.res.end('[]'); } catch (_) {} clearTimeout(pingWaiter.timer); }
+  const timer = setTimeout(() => {
+    pingWaiter = null;
+    try { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('[]'); } catch (_) {}
+  }, 25000);
+  pingWaiter = { res, timer };
 }
 
 function shellQuote(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }

@@ -1,14 +1,16 @@
 # Claude Notch — IPC contract
 
 Three components. The **leader** window's extension owns a loopback HTTP server on
-`127.0.0.1:39247` (`/event`, `/focus`, `/roster`, `/register`, `/deregister`); the app
-is driven by the `claudenotch://` URL scheme. Multi-window via leader/follower — see §6.
+`127.0.0.1:39247` (`/event`, `/pings`, `/roster`, `/focus`, `/register`, `/deregister`).
+The app **pulls** from it (long-poll pings + roster) and POSTs focus — it is never
+launched via a URL (that stole focus). Multi-window via leader/follower — see §6.
 
 ```
-Claude Code hook ──POST /event──▶ Cursor extension ──open claudenotch://notify──▶ App (pings)
- (in the terminal)                (39247: match tab,     ◀──POST /focus──  (click → reveal tab)
-                                   read name, keep         App (dashboard) ──GET /roster──▶ 39247
-                                   the live roster)        (hover → fetch → show → row → /focus)
+Claude Code hook ──POST /event──▶ Cursor extension (leader, 127.0.0.1:39247)
+ (in the terminal)                 match tab → roster + queue ping, raise windows
+                                   ◀── GET /pings   (app long-polls — focus-safe delivery)
+   App (notch) ───────────────────◀── GET /roster  (app pulls on hover → dashboard)
+                                   ──▶ POST /focus  (app pushes on click → raise + reveal)
 ```
 
 ## 1. Hook → Extension  `POST http://127.0.0.1:39247/event`
@@ -30,26 +32,39 @@ the extension knows *which* tab fired. Wired to FIVE Claude Code hook events.
 
 `hookEvent` → roster state:
 
-| hookEvent          | state      | pings?                        |
-|--------------------|------------|-------------------------------|
-| `UserPromptSubmit` | `running`  | no                            |
-| `Stop`             | `done`     | yes (unless viewing that tab) |
-| `Notification`     | `needsYou` | yes (always)                  |
-| `SessionStart`     | `idle`     | no                            |
-| `SessionEnd`       | (removed)  | no                            |
+| hookEvent          | state      | queues a ping?                              |
+|--------------------|------------|---------------------------------------------|
+| `UserPromptSubmit` | `running`  | no                                          |
+| `Stop`             | `done`     | yes                                         |
+| `Notification`     | `needsYou` | yes (unless already `done` → idle nudge, skipped) |
+| `SessionStart`     | `idle`     | no                                          |
+| `SessionEnd`       | (removed)  | no                                          |
 
-## 2. Extension → App, pings  `open "claudenotch://notify?…"`
+A queued ping carries `focused` (was the agent's window focused when it fired). The app
+decides whether to actually show it — see §2 (the "quiet the focused window" toggle).
 
-macOS routes the URL to the running app (launches it if needed).
+## 2. Extension → App, pings  `GET http://127.0.0.1:39247/pings` (long-poll)
 
+The app **pulls** pings; it is never launched via a URL (an `open claudenotch://` would
+foreground the app and steal key focus from whatever you're typing). The app loops on
+this GET; the leader returns queued pings at once, else holds the request up to ~25s and
+responds the instant a ping fires (so delivery feels instant, with no busy polling).
+
+Response: an array (often empty on the 25s timeout) of pings:
+
+```jsonc
+[
+  { "name": "frontend", "event": "needs_attention", "message": "…",
+    "sessionId": "b1f2…", "window": "code-project", "focused": false, "ts": 1782189000000 }
+]
 ```
-claudenotch://notify?name=frontend&event=needs_attention&message=…&sessionId=b1f2…&window=code-project
-```
 
-`name` = the tab name you set (falls back to cwd folder, then `"agent"`). `sessionId`
-is echoed back on click → POST `/focus`, where the leader raises the window (by its
-roster `folder`) and reveals the tab. `window` is the human label (logging/context only;
-the raise uses `folder` from the roster, not the URL).
+- `focused` — was that agent's Cursor window focused when it fired. If the **"Quiet the
+  window I'm working in"** toggle is ON (default) and `focused` is true, the app **drops**
+  the ping (you're working in that window). OFF → always shown.
+- `ts` — epoch-ms; the app ignores pings staler than 30s (e.g. queued while it was down).
+- `name` = the tab name (falls back to cwd folder, then `"agent"`). On click → POST
+  `/focus {sessionId}` (§3), which raises the window (by roster `folder`) + reveals the tab.
 
 ## 3. App → Extension, focus  `POST http://127.0.0.1:39247/focus`
 

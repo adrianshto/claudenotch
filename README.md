@@ -13,11 +13,14 @@ Surfaces your Claude Code agents (running in **Cursor** terminals) on the MacBoo
 
 ## When it pings
 
-- 🔔 **Needs you** (`Notification` hook — permission / opinion / idle): **always** pings.
-  The agent is blocked on you; you shouldn't miss it.
-- ✅ **Finished a turn** (`Stop` hook): pings **only when you're not already looking at
-  that tab** — i.e. another app is focused, or a different Cursor tab is active. If
-  Cursor is focused *and* that agent's terminal is the active one, it stays quiet.
+- 🔔 **Needs you** (`Notification` hook) and ✅ **finished a turn** (`Stop` hook) both ping.
+- **Quiet the window I'm working in** (🔔 menu toggle, **on by default**): while you're
+  focused on a Cursor window, *its* agents stay silent — done **and** needs-you, for every
+  tab/pane in that window — because you're already looking at it. Agents in **other**
+  windows still ping. Switch focus and it follows you. Turn the toggle **off** to ping for
+  everything regardless of focus.
+- Pings **never steal your keyboard focus** — they're delivered in the background, so a
+  notch appearing (or being suppressed) won't knock you out of what you're typing.
 - **Scope:** only agents tied to a **Cursor terminal tab** ping. Background or
   non-Cursor `claude` sessions match no tab and are ignored.
 
@@ -39,9 +42,11 @@ An agent that **just finished** (went done in the last ~2 min) shows up **purple
 See `PROTOCOL.md` for the exact wire format. The shape:
 
 ```
-Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://notify─▶ App (pings)
- (in the terminal)              (39247: match tab,   ◀──POST /focus──  (click → reveal tab)
-                                 name, live roster)   App (dashboard) ──GET /roster──▶ 39247
+Claude Code hook ─POST /event─▶ Cursor extension (leader, 39247)
+ (in the terminal)               match tab → roster + queue ping, raise windows
+                                 ◀── GET /pings  (app long-polls — pings, focus-safe)
+   App (notch) ──────────────────◀── GET /roster (app pulls on hover)
+                                 ──▶ POST /focus (click → raise window + reveal tab)
 ```
 
 ## What's already installed (done by setup)
@@ -49,7 +54,7 @@ Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://not
 - ✅ **Hook** — `~/.claude-notch/notify-hook.js`, wired into `~/.claude/settings.json`
   on 5 events (`Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`,
   `SessionEnd`), async so it never delays an agent.
-- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.10.0).
+- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.12.0).
 - ✅ **Notch app** — installed at `/Applications/ClaudeNotch.app` and **auto-starts at
   login** (LaunchAgent `com.casper.claudenotch`). Built from `app/` (no Xcode project needed).
 
@@ -112,14 +117,15 @@ then re-run the install command.
   session shows after its first event — send it a prompt. `curl http://127.0.0.1:39247/roster`
   to inspect. Multi-window works (leader/follower); if a window's agents are missing, that
   window's extension may be a stale version — reload it (see below).
-- **No ping at all for a Cursor agent:** "Show Status" output channel logs the
-  decision per event — `ping name=…`, `suppressed — already viewing …`, or
-  `no tab matched — ignored`. If it says *no tab matched*, make sure `claude` runs
-  *directly* in that Cursor terminal (not via a wrapper / ssh / tmux).
-- **End-of-turn ping didn't fire:** expected if that tab was active and Cursor was
-  focused (the focus rule). Switch to another tab/app and it pings.
-- **Toast instead of notch:** the app isn't running/registered. Launch
-  `ClaudeNotch.app`; test via its menu. Re-run from Xcode to re-register the scheme.
+- **No ping at all for a Cursor agent:** the extension "Show Status" channel logs `ping
+  "…"` when it queues one; if it says `no tab matched`, make sure `claude` runs *directly*
+  in that Cursor terminal (not via a wrapper / ssh / tmux). The app log (`~/.claude-notch/
+  app.log`) shows `ping suppressed — focus-mute on…` when it's hidden by the toggle.
+- **Ping didn't show:** expected if you were **focused on that agent's window** and the
+  "Quiet the window I'm working in" toggle is on. Switch to another window/app, or turn the
+  toggle off (🔔 menu), and it pings.
+- **No notch even from another window:** the app isn't running. It auto-starts at login;
+  if needed, launch `/Applications/ClaudeNotch.app` and use 🔔 → "Test Notch Ping".
 - **Click doesn't focus / wrong window:** focusing runs `cursor --reuse-window <folder>`
   via the extension. Make sure **every** Cursor window runs the same extension version
   (⌘⇧P → "Developer: Reload Window" on any stale one) — the leader needs each window's

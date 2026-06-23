@@ -32,6 +32,12 @@ final class NotchNotifier {
 
         Task {
             await notch.expand()
+            // Don't let the notch panel become the key window — otherwise showing it
+            // steals the text cursor from whatever app/window you're typing in. Clicks
+            // still work (the tap view accepts first mouse without needing key focus).
+            if let panel = notch.windowController?.window as? NSPanel {
+                panel.becomesKeyOnlyIfNeeded = true
+            }
             dismissTask?.cancel()
             dismissTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(seconds))

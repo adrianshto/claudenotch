@@ -21,11 +21,16 @@ extension reads live via `terminal.name`.
 ## Architecture
 
 ```
-Claude Code hook ──POST /event──▶ Cursor extension ──open claudenotch://notify──▶ App (pings)
- (in the terminal)                (39247: matches tab,    ◀─POST /focus── (click → raise window
-                                   reads name, keeps        App (dashboard)  + reveal tab)
-                                   the live roster)         ──GET /roster──▶ 39247  (hover → click → /focus)
+Claude Code hook ──POST /event──▶ Cursor extension (leader, 127.0.0.1:39247)
+ (in the terminal)                 matches tab → updates roster, queues pings, raises windows
+                                   ◀── GET /pings   (app long-polls; focus-SAFE ping delivery)
+   App (notch) ───────────────────◀── GET /roster  (app pulls on hover → dashboard)
+                                   ──▶ POST /focus  (app pushes on click → raise window + reveal tab)
 ```
+
+**Why the app PULLS pings** (not `open claudenotch://`): launching the app via a URL
+foregrounds it and steals key focus from whatever you're typing. So the app long-polls
+`GET /pings` instead — it's never launched/foregrounded, so a ping never yanks your cursor.
 
 1. **Hook** (`hook/notify-hook.js`, Node) — wired to FIVE Claude Code events:
    `Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`, `SessionEnd`. Computes
@@ -39,11 +44,15 @@ Claude Code hook ──POST /event──▶ Cursor extension ──open claudeno
      promotes (election retry every 3s). A lone window is just a leader with no followers
      → identical to single-window behavior.
    - Leader endpoints: `POST /event` (hook; resolves the PID chain against its OWN
-     terminals AND followers' registered terminals → updates the GLOBAL roster + pings),
-     `GET /roster` (app fetches on hover; returns all windows' agents), `POST /focus`
+     terminals AND followers' registered terminals → updates the GLOBAL roster + queues a
+     ping), `GET /pings` (app long-polls; returns queued pings, else holds ≤25s), `GET
+     /roster` (app fetches on hover; returns all windows' agents), `POST /focus`
      (`{sessionId}` → **raises the owning window across Spaces** via `cursor
      --reuse-window <folder>`, then reveals the terminal locally OR routes the reveal to
      the owning follower's callback port), `POST /register` + `POST /deregister` (followers).
+   - A queued ping is `{name, event, message, sessionId, window, focused, ts}` — `focused`
+     = was that agent's window focused when it fired (the app uses it for the "quiet the
+     focused window" toggle); `ts` = epoch-ms, so the app drops pings staler than 30s.
    - Each roster entry: `{sessionId, name, state, windowId, window, folder, pid, doneAt}` —
      `window` is the human label (project/folder name via `vscode.workspace.name`) the
      dashboard groups by; `folder` is the workspace's filesystem path, used to raise that
@@ -52,9 +61,12 @@ Claude Code hook ──POST /event──▶ Cursor extension ──open claudeno
      Followers report their `folder` in `/register` so the leader can raise any window.
    - Logs role + focus decisions to `~/.claude-notch/ext.log`.
 3. **App** (`app/`, SwiftUI menu-bar-only, built by `build-app.sh` → `ClaudeNotch.app`):
-   - **Pings**: `NotchNotifier` shows a DynamicNotch on `claudenotch://notify`; tap →
-     `Focus.request` (POST /focus). The app does NOT touch windows itself — the extension
-     does all focusing/raising (see "Window raising").
+   - **Pings**: `AppDelegate.startPingPolling()` long-polls `GET /pings`; for each ping it
+     applies the focus-mute toggle (below), then `NotchNotifier` shows a DynamicNotch
+     (a non-key panel — `becomesKeyOnlyIfNeeded`, so it never steals your text cursor);
+     tap → `Focus.request` (POST /focus). The app never touches windows itself.
+   - **Menu** (`ClaudeNotchApp`): a 🔔 `MenuBarExtra` with a **"Quiet the window I'm
+     working in"** toggle (`@AppStorage("focusMute")`, default ON), "Test Notch Ping", Quit.
    - **Dashboard**: `HoverDetector` (tiny panel over the notch) → on hover,
      `RosterFetcher` GETs /roster → `DashboardController` expands a DynamicNotch showing
      `RosterDashboardView`; retracts when the cursor leaves; row tap → `Focus.request`.
@@ -85,12 +97,17 @@ single-instance-over-pipe model; harmless, only one real instance runs.
 
 ## Behavior rules (intentional — don't "fix" these)
 
-- **Needs you** (`Notification`): pings for a real permission/question prompt (fired while
-  the agent is `running`). A `Notification` while the agent is already `done` is Claude
-  Code's repeated idle "waiting for you" nudge → **suppressed** (no ping; stays `done`).
-  Detected via the prior roster state, not message text.
-- **Finished** (`Stop`): ping fires **only if you're not already looking at that tab**
-  (suppressed when `window.state.focused && activeTerminal === thatTerminal`).
+- **Quiet the focused window** (`focusMute` toggle, default ON): a ping whose agent window
+  was **focused** when it fired is **suppressed by the app** (you're working in that window
+  — done AND needs-you go quiet, for *every* agent/pane in it). Other windows ping normally.
+  Toggle OFF → everything pings regardless of focus. The extension stamps `focused` per
+  ping (whole-window focus, not just the active tab); the app decides. NOTE: this replaced
+  the old per-*tab* Stop suppression.
+- **Idle-nudge suppression** (extension-side, always on): a `Notification` while the agent
+  is already `done` is Claude Code's repeated idle "waiting for you" nudge → no ping
+  queued (stays `done`). Detected via prior roster state, not message text.
+- **Needs you** (`Notification`) vs **Finished** (`Stop`): both queue a ping; the app
+  surfaces or suppresses it per the focus-mute toggle above.
 - **Scope**: only agents matched to a Cursor terminal tab are tracked/pinged. Unmatched
   (background jobs, plain-terminal `claude`) are ignored.
 - **Lifecycle → state**: `UserPromptSubmit`→running, `Stop`→done, `Notification`→needsYou
@@ -111,11 +128,12 @@ until you rebuild/reinstall (commands below).
 | Piece | Source | Live copy the OS/Cursor/Claude uses |
 |---|---|---|
 | Hook | `hook/notify-hook.js` | `~/.claude-notch/notify-hook.js` + `hooks` block in `~/.claude/settings.json` (5 events) |
-| Extension | `extension/extension.js`, `package.json` | `~/.cursor/extensions/local.claude-notch-<ver>` (currently 0.10.0) |
+| Extension | `extension/extension.js`, `package.json` | `~/.cursor/extensions/local.claude-notch-<ver>` (currently 0.12.0) |
 | App | `app/Sources/ClaudeNotch/*.swift`, `app/Package.swift`, `app/Info.plist` | **runs from `/Applications/ClaudeNotch.app`** (auto-starts at login via LaunchAgent `~/Library/LaunchAgents/com.casper.claudenotch.plist`); built in `app/ClaudeNotch.app`, deployed there by `build-app.sh` |
 
-App source files: `ClaudeNotchApp` (MenuBarExtra), `AppDelegate` (URL handling, hover
-wiring, retract watcher; clicks just call `Focus.request`), `NotchNotifier`+`NotchContent` (pings),
+App source files: `ClaudeNotchApp` (MenuBarExtra + focus-mute toggle), `AppDelegate`
+(ping long-poll + focus-mute decision, hover wiring, retract watcher; clicks just call
+`Focus.request`), `NotchNotifier`+`NotchContent` (pings),
 `DashboardController`+`RosterDashboardView`+`HoverDetector`+`ScreenNotch`+`RosterFetcher`
 (dashboard), `RosterStore` (Agent/AgentState model), `ClickCatcher` (AppKit tap target
 that works in non-key notch panels), `Focus` (POST /focus), `Log`.
@@ -127,10 +145,14 @@ editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Ap
 
 ## Invariants (change in lockstep)
 
-- **Port `39247`** (extension server): `/event`, `/focus`, `/roster`. Hardcoded in
-  `hook/notify-hook.js` (`EXT_PORT`), `extension.js` (`PORT`), `RosterFetcher.swift`, `Focus.swift`.
-- **URL scheme `claudenotch://`**: `notify` (ping) + `dashboard` (dev toggle). In
-  `extension.js`, `app/Info.plist` (`CFBundleURLTypes`), `AppDelegate.swift`.
+- **Port `39247`** (extension server): `/event`, `/focus`, `/roster`, `/pings`. Hardcoded in
+  `hook/notify-hook.js` (`EXT_PORT`), `extension.js` (`PORT`), `RosterFetcher.swift`,
+  `Focus.swift`, and `AppDelegate.fetchPings()` (the `/pings` long-poll URL).
+- **URL scheme `claudenotch://`**: now only `dashboard` (dev toggle) — pings moved to the
+  `/pings` long-poll (URL `open` foregrounded the app and stole focus). In `app/Info.plist`
+  (`CFBundleURLTypes`), `AppDelegate.swift`.
+- **Focus-mute** key: `focusMute` in `UserDefaults` (`@AppStorage` in `ClaudeNotchApp`,
+  read in `AppDelegate.handlePing`), default registered `true`.
 - **Hooks**: 5 events in `~/.claude/settings.json`, all running
   `/opt/homebrew/bin/node /Users/casper/.claude-notch/notify-hook.js` (absolute node path;
   hooks don't inherit the interactive PATH). `async:true` so they never delay an agent.
@@ -157,10 +179,13 @@ editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Ap
 ## Test / debug
 
 - `curl -s http://127.0.0.1:39247/roster` — see the live roster JSON.
+- `curl -s http://127.0.0.1:39247/pings` — drains the queued pings (the app's long-poll;
+  may hold ~25s if none are pending).
 - App log: `~/.claude-notch/app.log`; extension log: `~/.claude-notch/ext.log`.
 - Extension output channel: ⌘⇧P → "Claude Notch: Show Status".
 - Dev toggle the dashboard: `open "claudenotch://dashboard"`.
-- Fire a ping: `open "claudenotch://notify?name=demo&event=needs_attention&message=hi&sessionId=x"`.
+- Fire a test notch: 🔔 menu → "Test Notch Ping" (the `claudenotch://notify` URL path is
+  gone — pings now flow via `/pings`).
 
 ## Status
 
@@ -182,6 +207,13 @@ editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Ap
   No Accessibility/Screen Recording needed. See "Window raising". Only wart: a brief
   throwaway Cursor forwarder process flashes in the dock per focus (Cursor's
   single-instance model) — harmless.
+- ✅ **Phase 2c** — quiet-the-focused-window + focus-safe delivery: **DONE.** The agent
+  window you're focused on stays silent (toggle in the 🔔 menu, default ON; whole window,
+  not just the active tab). Crucially, pings no longer `open claudenotch://` — that
+  foregrounded the app and **stole key focus from whatever you were typing**, even when the
+  notch was suppressed. The app now **long-polls `GET /pings`** (extension queues; never
+  launches the app), and the notch panel is non-key (`becomesKeyOnlyIfNeeded`). Result: a
+  ping (shown or suppressed) never knocks you out of your editor. Verified end-to-end.
 - ⛔ **Phase 3** — focus highlight (glow on the focused pane): **EXPLORED & DROPPED.** No native
   API outlines the focused split pane (VS Code rejected it, #210579); a real pane glow needs
   workbench CSS injection (patches Cursor's bundle, "corrupt install" banner, re-patch per

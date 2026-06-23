@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menubar-only accessory: no dock icon, never steals focus.
         NSApp.setActivationPolicy(.accessory)
+        // "Quiet the window I'm working in" defaults ON (suppress pings for the focused window).
+        UserDefaults.standard.register(defaults: ["focusMute": true])
         // No system permissions needed: window-raising is done by the Cursor extension
         // (`cursor --reuse-window <folder>`), which we reach via the focus POST below.
         dashboard = DashboardController(store: roster) { [weak self] agent in
@@ -36,7 +38,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detector.onExit = { [weak self] in self?.detectorHovered = false }
         detector.start()
 
+        // Pull pings from the extension instead of being launched with a URL (which would
+        // foreground us and steal key focus from whatever the user is typing).
+        startPingPolling()
+
         Log.write("app launched")
+    }
+
+    // MARK: - Ping long-poll (extension → app, focus-safe)
+
+    private struct PingItem: Decodable, Sendable {
+        let name: String
+        let event: String
+        let message: String?
+        let sessionId: String
+        let window: String?
+        let focused: Bool?
+        let ts: Double?
+    }
+
+    /// Continuously long-poll GET /pings. The request parks on the server until a ping
+    /// arrives (or ~25s), so delivery is effectively instant with no busy polling.
+    private func startPingPolling() {
+        Task { @MainActor [weak self] in
+            while true {
+                guard self != nil else { return }
+                let pings = await Self.fetchPings()
+                guard let self else { return }
+                for p in pings { self.handlePing(p) }
+                if pings.isEmpty { try? await Task.sleep(for: .milliseconds(400)) }  // gentle gap on timeout/error
+            }
+        }
+    }
+
+    private static func fetchPings() async -> [PingItem] {
+        guard let url = URL(string: "http://127.0.0.1:39247/pings") else { return [] }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 30
+        guard
+            let (data, _) = try? await URLSession.shared.data(for: req),
+            let items = try? JSONDecoder().decode([PingItem].self, from: data)
+        else { return [] }
+        return items
+    }
+
+    private func handlePing(_ p: PingItem) {
+        // Drop stale pings (e.g. queued while the app was down) so we don't pop a notch
+        // for something that finished minutes ago.
+        if let ts = p.ts, Date().timeIntervalSince1970 * 1000 - ts > 30_000 { return }
+
+        // "Quiet the window I'm working in": if on and this agent's window was focused, skip.
+        let focused = p.focused ?? false
+        let focusMute = UserDefaults.standard.object(forKey: "focusMute") as? Bool ?? true
+        if focused && focusMute {
+            Log.write("ping suppressed — focus-mute on, window focused: \(p.name) window=\(p.window ?? "")")
+            return
+        }
+
+        let isDone = p.event == "done"
+        let symbol = isDone ? "checkmark.seal.fill" : "bell.fill"
+        let sound = isDone ? "Glass" : "Funk"
+        let body = (p.message?.isEmpty == false)
+            ? p.message!
+            : (isDone ? "Finished — click to open." : "Needs your attention — click to jump in.")
+        let sessionId = p.sessionId, window = p.window ?? ""
+        notifier.notify(title: p.name, message: body, systemImage: symbol, sound: sound) {
+            Log.write("notch tapped — requesting focus for session=\(sessionId) window=\(window)")
+            Focus.request(sessionId: sessionId)
+        }
     }
 
     /// Retract the dashboard once the cursor is neither over the notch nor the
@@ -54,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Entry point for `open "claudenotch://notify?..."` fired by the Cursor extension.
+    /// Dev entry point for `open "claudenotch://dashboard"` (pings come via long-poll now).
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls { handle(url) }
     }
@@ -70,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handle(_ url: URL) {
         guard url.scheme == "claudenotch" else { return }
 
-        // Dev/demo trigger: `open "claudenotch://dashboard"` toggles the dashboard.
+        // Dev trigger: `open "claudenotch://dashboard"` toggles the dashboard.
         if url.host == "dashboard" {
             Log.write("url received: dashboard toggle (shown=\(dashboard.shown))")
             Task { @MainActor [weak self] in
@@ -78,29 +147,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.roster.apply(await RosterFetcher.fetch())
                 self.dashboard.toggle()
             }
-            return
-        }
-
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        func q(_ key: String) -> String { items.first { $0.name == key }?.value ?? "" }
-
-        let name = q("name").isEmpty ? "agent" : q("name")
-        let event = q("event")
-        let message = q("message")
-        let sessionId = q("sessionId")
-        let window = q("window")
-        Log.write("url received: name=\(name) event=\(event) session=\(sessionId) window=\(window)")
-
-        let isDone = event == "done"
-        let symbol = isDone ? "checkmark.seal.fill" : "bell.fill"
-        let sound = isDone ? "Glass" : "Funk"
-        let body = !message.isEmpty
-            ? message
-            : (isDone ? "Finished — click to open." : "Needs your attention — click to jump in.")
-
-        notifier.notify(title: name, message: body, systemImage: symbol, sound: sound) {
-            Log.write("notch tapped — requesting focus for session=\(sessionId) window=\(window)")
-            Focus.request(sessionId: sessionId)
         }
     }
 }
