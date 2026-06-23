@@ -129,20 +129,23 @@ rebuilt. Decouple later via /Applications + Login Item (deferred until iteration
 - ✅ **Phase 2b (Step 1)** — multi-window via leader/follower (above). Verified end-to-end:
   the dashboard aggregates agents from ALL windows, grouped by window (project label), and
   click-to-focus **routes into the owning follower window and reveals its terminal**.
-- ⬜ **Phase 2b (Step 2)** — raise the *specific* other window to the front on focus. Today
-  cross-window focus reveals the terminal but doesn't pull that window above sibling Cursor
-  windows (macOS won't let same-app windows steal focus easily; the app's `raiseCursor`
-  activates the app but not a specific window). Likely needs **Accessibility permission** +
-  AX window matching by title — deferred; flagged with the user.
-- ⬜ **Phase 3** — focus highlight: when the user clicks/focuses a terminal, make it visually
-  obvious which one is active (purple glow / tab tint) so side-by-side terminals are
-  distinguishable. See task notes; extensions can't style the terminal DOM (sandbox) — likely
-  tab-color via API, or workbench CSS injection (unsupported; security cost on a work machine).
+- ⛔ **Phase 2b (Step 2)** — raise the *specific* other window on focus: **EXPLORED & DROPPED.**
+  Built it (AX + Accessibility, matching the Cursor window by title) but AX only sees/raises
+  windows on the **current Space**; the user runs windows across multiple Spaces, and macOS has
+  no supported way to raise a window on another Space (would need private Space-switching APIs —
+  unacceptable on a work machine). **Reverted** — current HEAD is the clean state without it.
+  Current behavior: cross-window focus reveals the terminal + `raiseCursor` brings Cursor forward
+  on the current Space. Accepted by the user (keeps each window separate).
+- ⛔ **Phase 3** — focus highlight (glow on the focused pane): **EXPLORED & DROPPED.** No native
+  API outlines the focused split pane (VS Code rejected it, #210579); a real pane glow needs
+  workbench CSS injection (patches Cursor's bundle, "corrupt install" banner, re-patch per
+  update, work-machine risk). User decided the **native active-tab highlight is fine** and
+  declined the CSS hack. Optional-if-asked: split a distinct "idle" state out of needsYou.
 
 ## Known limitations
 
-- Multi-window roster + focus-routing work; **raising the specific other window** to the
-  front on click does not yet (Phase 2b Step 2 — see Status).
+- Multi-window roster + focus-routing work; **raising a window on another macOS Space** is
+  not possible (AX can't reach other Spaces) — accepted, see Status (Phase 2b Step 2).
 - All windows' extensions must be the **same version** — a stale one holding the port as a
   pre-leader/follower build breaks the model. After updating, reload every Cursor window.
 - Dashboard populates from lifecycle events, so a brand-new session shows only after its
