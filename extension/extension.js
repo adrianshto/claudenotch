@@ -209,6 +209,15 @@ async function handleEvent(data) {
     viewing = !!(f.follower.focused && f.follower.activeTerminalPid === pid);
   }
 
+  // A Notification arriving while the agent is already `done` is just Claude
+  // Code's repeated "waiting for you" idle nudge — keep it showing done, no ping.
+  // (A Notification while running is a real permission/question prompt → pings.)
+  const priorState = roster.get(sessionId) && roster.get(sessionId).state;
+  if (hookEvent === 'Notification' && priorState === 'done') {
+    output.appendLine(`[Notification] idle nudge for "${name}" — suppressed (already done)`);
+    return;
+  }
+
   const state = stateFromHook(hookEvent);
   if (sessionId && state) {
     if (state === 'gone') { roster.delete(sessionId); localSessions.delete(sessionId); }

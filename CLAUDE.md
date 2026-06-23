@@ -57,13 +57,16 @@ Claude Code hook ──POST /event──▶ Cursor extension ──open claudeno
 
 ## Behavior rules (intentional — don't "fix" these)
 
-- **Needs you** (`Notification`): ping **always** fires (agent is blocked on you).
+- **Needs you** (`Notification`): pings for a real permission/question prompt (fired while
+  the agent is `running`). A `Notification` while the agent is already `done` is Claude
+  Code's repeated idle "waiting for you" nudge → **suppressed** (no ping; stays `done`).
+  Detected via the prior roster state, not message text.
 - **Finished** (`Stop`): ping fires **only if you're not already looking at that tab**
   (suppressed when `window.state.focused && activeTerminal === thatTerminal`).
 - **Scope**: only agents matched to a Cursor terminal tab are tracked/pinged. Unmatched
   (background jobs, plain-terminal `claude`) are ignored.
-- **Lifecycle → state**: `UserPromptSubmit`→running, `Stop`→done, `Notification`→needsYou,
-  `SessionStart`→idle, `SessionEnd`→removed.
+- **Lifecycle → state**: `UserPromptSubmit`→running, `Stop`→done, `Notification`→needsYou
+  (unless already `done` → stays `done`, no ping), `SessionStart`→idle, `SessionEnd`→removed.
 - **Dashboard is summon-on-hover** (not always-on) — keeps the notch clean and sidesteps
   DynamicNotchKit's always-on window eating clicks across the top quarter of the screen.
 
