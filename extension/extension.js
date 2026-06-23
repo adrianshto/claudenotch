@@ -168,6 +168,7 @@ function upsertFollower(d) {
   followers.set(d.windowId, {
     callbackPort: d.callbackPort,
     label: d.label || 'window',
+    folder: d.folder || '',
     terminals: Array.isArray(d.terminals) ? d.terminals : [],
     focused: !!d.focused,
     activeTerminalPid: d.activeTerminalPid,
@@ -192,11 +193,12 @@ async function handleEvent(data) {
   const pidChain = Array.isArray(data.pidChain) ? data.pidChain : [];
   const sessionId = data.sessionId || '';
 
-  let windowId, name, pid, viewing, label;
+  let windowId, name, pid, viewing, label, folder;
   const local = await findLocalTerminal(pidChain);
   if (local) {
     windowId = WINDOW_ID;
     label = windowLabel();
+    folder = folderPath();
     name = (local.name && local.name.trim()) || folderOf(data.cwd) || 'agent';
     pid = await safePid(local);
     if (sessionId) localSessions.set(sessionId, local);
@@ -206,6 +208,7 @@ async function handleEvent(data) {
     if (!f) { output.appendLine(`[${hookEvent}] no tab matched (any window)`); return; }
     windowId = f.windowId; name = f.name; pid = f.pid;
     label = f.follower.label || 'window';
+    folder = f.follower.folder || '';
     viewing = !!(f.follower.focused && f.follower.activeTerminalPid === pid);
   }
 
@@ -221,7 +224,7 @@ async function handleEvent(data) {
   const state = stateFromHook(hookEvent);
   if (sessionId && state) {
     if (state === 'gone') { roster.delete(sessionId); localSessions.delete(sessionId); }
-    else roster.set(sessionId, { sessionId, name, state, windowId, window: label, pid });
+    else roster.set(sessionId, { sessionId, name, state, windowId, window: label, folder, pid });
   }
 
   if (hookEvent === 'Notification' || hookEvent === 'Stop') {
@@ -231,7 +234,7 @@ async function handleEvent(data) {
       return;
     }
     output.appendLine(`[${event}] ping "${name}" window=${windowId} session=${sessionId}`);
-    fireNotch({ name, event, message: data.message || '', sessionId });
+    fireNotch({ name, event, message: data.message || '', sessionId, window: label });
   } else {
     output.appendLine(`[${hookEvent}] roster "${name}" state=${state} window=${windowId}`);
   }
@@ -250,6 +253,11 @@ function focusSession(sessionId) {
   if (!sessionId) { flog('focus: empty sessionId'); return; }
   const entry = roster.get(sessionId);
   if (!entry) { flog(`focus: no roster entry for ${sessionId}`); return; }
+
+  // Bring the owning Cursor window forward (across Spaces/fullscreen) via the CLI.
+  raiseWindow(entry.folder);
+
+  // Reveal the specific terminal tab within that window.
   if (entry.windowId === WINDOW_ID) {
     const t = localSessions.get(sessionId);
     if (t) { flog(`focus: local reveal "${entry.name}"`); t.show(false); }
@@ -296,6 +304,7 @@ async function registerWithLeader() {
     windowId: WINDOW_ID,
     callbackPort,
     label: windowLabel(),
+    folder: folderPath(),
     terminals,
     focused: vscode.window.state.focused,
     activeTerminalPid,
@@ -356,13 +365,38 @@ function windowLabel() {
   return 'window';
 }
 
+// The filesystem path to reuse THIS window via `cursor --reuse-window <path>` —
+// a .code-workspace file if there is one, else the first folder. This is how we
+// raise the right window across Spaces (the private WindowServer APIs no-op on
+// macOS 26; Cursor's own CLI activation crosses Spaces reliably).
+function folderPath() {
+  const wf = vscode.workspace.workspaceFile;
+  if (wf && wf.scheme === 'file') return wf.fsPath;
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders && folders.length) return folders[0].uri.fsPath;
+  return '';
+}
+
+// Ask Cursor to focus the window that has `folder` open. Runs the bundled CLI,
+// which connects to the already-running instance and activates that window
+// (app.focus({steal:true})) — bringing it forward even from another desktop.
+function raiseWindow(folder) {
+  if (!folder) return;
+  const cli = require('path').join(vscode.env.appRoot, 'bin', 'cursor');
+  exec(`${shellQuote(cli)} --reuse-window ${shellQuote(folder)}`, (err) => {
+    if (err) flog(`raiseWindow(${folder}) failed: ${err.message}`);
+    else flog(`raiseWindow: cursor --reuse-window ${folder}`);
+  });
+}
+
 function fireNotch(p) {
   const url =
     'claudenotch://notify' +
     `?name=${encodeURIComponent(p.name)}` +
     `&event=${encodeURIComponent(p.event)}` +
     `&message=${encodeURIComponent(p.message)}` +
-    `&sessionId=${encodeURIComponent(p.sessionId)}`;
+    `&sessionId=${encodeURIComponent(p.sessionId)}` +
+    `&window=${encodeURIComponent(p.window || '')}`;
   exec(`open ${shellQuote(url)}`, (err) => {
     if (!err) return;
     output.appendLine(`open failed (${err.message}); toast fallback.`);

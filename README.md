@@ -28,7 +28,9 @@ agents (status counts, then each agent by name + state). Click a row to focus th
 tab; move your cursor away and it retracts. It's **summon-on-hover** (not always-on),
 so the notch stays clean when you're not looking. It spans **all your Cursor windows**,
 **grouped by project** (leader/follower under the hood). Clicking an agent in another
-window focuses its terminal; *raising* that window fully to the front is still pending.
+window **brings that window to the front — even on another desktop/Space or fullscreen**
+— and reveals its terminal (via Cursor's own `--reuse-window`; you'll see a brief Cursor
+icon flash in the dock as it does, which is harmless).
 
 See `PROTOCOL.md` for the exact wire format. The shape:
 
@@ -43,7 +45,7 @@ Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://not
 - ✅ **Hook** — `~/.claude-notch/notify-hook.js`, wired into `~/.claude/settings.json`
   on 5 events (`Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`,
   `SessionEnd`), async so it never delays an agent.
-- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.4.0).
+- ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.9.0).
 - ✅ **Notch app** — built at `app/ClaudeNotch.app` (no Xcode project needed).
 
 ## 1. The notch app
@@ -57,7 +59,9 @@ verified to compile + link against the real library.
 menu bar. Its menu has **"Test notch ping"** to confirm the notch renders + taps work.
 
 **Rebuild after code edits:** `cd app && ./build-app.sh` (uses the Xcode toolchain
-for the SwiftUI macros DynamicNotchKit needs; ad-hoc signs; registers the URL scheme).
+for the SwiftUI macros DynamicNotchKit needs; signs with a stable self-signed identity
+if set up, else ad-hoc; registers the URL scheme). The app needs **no system
+permissions** — window focusing is delegated to Cursor's CLI via the extension.
 
 **Daily use:** move `ClaudeNotch.app` to `/Applications` and add it to **Login Items**
 (System Settings → General → Login Items) so it's always running and registered.
@@ -82,7 +86,8 @@ then re-run the install command.
 1. **Reload Cursor** (⌘⇧P → "Developer: Reload Window") so the extension + hooks are live.
 2. **Pings:** rename a terminal tab (right-click → Rename → e.g. `frontend`), run
    `claude` in it; trigger a permission prompt, or switch away and let it finish a turn.
-   The notch drops down labelled `frontend`; click it → Cursor comes forward on that tab.
+   The notch drops down labelled `frontend`; click it → that window comes to the front
+   (even from another desktop) on that tab.
 3. **Dashboard:** with at least one `claude` session running, **hover the notch** → it
    drops down listing your agents + live state. Click a row → focuses that tab.
    (`curl -s http://127.0.0.1:39247/roster` shows the raw roster.)
@@ -94,7 +99,8 @@ then re-run the install command.
   UserPromptSubmit, SessionEnd).
 - **Dashboard empty / agent missing:** the roster fills from lifecycle events, so a
   session shows after its first event — send it a prompt. `curl http://127.0.0.1:39247/roster`
-  to inspect. Only the window that owns port 39247 is tracked (multi-window is pending).
+  to inspect. Multi-window works (leader/follower); if a window's agents are missing, that
+  window's extension may be a stale version — reload it (see below).
 - **No ping at all for a Cursor agent:** "Show Status" output channel logs the
   decision per event — `ping name=…`, `suppressed — already viewing …`, or
   `no tab matched — ignored`. If it says *no tab matched*, make sure `claude` runs
@@ -103,9 +109,12 @@ then re-run the install command.
   focused (the focus rule). Switch to another tab/app and it pings.
 - **Toast instead of notch:** the app isn't running/registered. Launch
   `ClaudeNotch.app`; test via its menu. Re-run from Xcode to re-register the scheme.
-- **Click doesn't focus:** if sandboxed, enable Outgoing Connections (Client).
-- **Multiple Cursor windows:** only the window that grabbed port 39247 handles events
-  (v1 limitation).
+- **Click doesn't focus / wrong window:** focusing runs `cursor --reuse-window <folder>`
+  via the extension. Make sure **every** Cursor window runs the same extension version
+  (⌘⇧P → "Developer: Reload Window" on any stale one) — the leader needs each window's
+  folder to raise it. A brief second Cursor icon flashing in the dock on focus is normal.
+- **Multiple Cursor windows:** fully supported (leader/follower). Clicking an agent
+  raises its window across desktops/Spaces.
 
 ## Uninstall
 

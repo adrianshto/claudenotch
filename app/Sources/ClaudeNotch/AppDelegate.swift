@@ -11,10 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menubar-only accessory: no dock icon, never steals focus.
         NSApp.setActivationPolicy(.accessory)
+        // No system permissions needed: window-raising is done by the Cursor extension
+        // (`cursor --reuse-window <folder>`), which we reach via the focus POST below.
         dashboard = DashboardController(store: roster) { [weak self] agent in
             guard let self else { return }
-            Log.write("dashboard pick: \(agent.name) session=\(agent.id) → focus")
-            self.raiseCursor()
+            Log.write("dashboard pick: \(agent.name) session=\(agent.id) window=\(agent.window) → focus")
             Focus.request(sessionId: agent.id)
             self.dashboard.hide()
         }
@@ -95,7 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let event = q("event")
         let message = q("message")
         let sessionId = q("sessionId")
-        Log.write("url received: name=\(name) event=\(event) session=\(sessionId)")
+        let window = q("window")
+        Log.write("url received: name=\(name) event=\(event) session=\(sessionId) window=\(window)")
 
         let isDone = event == "done"
         let symbol = isDone ? "checkmark.seal.fill" : "bell.fill"
@@ -104,26 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? message
             : (isDone ? "Finished — click to open." : "Needs your attention — click to jump in.")
 
-        notifier.notify(title: name, message: body, systemImage: symbol, sound: sound) { [weak self] in
-            Log.write("notch tapped — requesting focus for session=\(sessionId)")
-            self?.raiseCursor()
+        notifier.notify(title: name, message: body, systemImage: symbol, sound: sound) {
+            Log.write("notch tapped — requesting focus for session=\(sessionId) window=\(window)")
             Focus.request(sessionId: sessionId)
-        }
-    }
-
-    /// Bring Cursor to the front so the tab the extension reveals is actually
-    /// visible when you click the notch from another app.
-    private func raiseCursor() {
-        let apps = NSWorkspace.shared.runningApplications
-        // Match the MAIN Cursor app (a regular UI app) — NOT helper XPC services
-        // like "CursorUIViewService" whose bundle id also contains "cursor".
-        let cursor = apps.first { $0.activationPolicy == .regular && $0.localizedName == "Cursor" }
-            ?? apps.first { $0.activationPolicy == .regular && ($0.bundleIdentifier?.lowercased().contains("cursor") ?? false) }
-        if let cursor {
-            cursor.activate(options: [.activateAllWindows])
-            Log.write("raiseCursor: activated \(cursor.localizedName ?? "?") [\(cursor.bundleIdentifier ?? "?")]")
-        } else {
-            Log.write("raiseCursor: main Cursor app not found")
         }
     }
 }

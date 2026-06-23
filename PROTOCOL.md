@@ -43,11 +43,13 @@ the extension knows *which* tab fired. Wired to FIVE Claude Code hook events.
 macOS routes the URL to the running app (launches it if needed).
 
 ```
-claudenotch://notify?name=frontend&event=needs_attention&message=…&sessionId=b1f2…
+claudenotch://notify?name=frontend&event=needs_attention&message=…&sessionId=b1f2…&window=code-project
 ```
 
 `name` = the tab name you set (falls back to cwd folder, then `"agent"`). `sessionId`
-is echoed back on click to focus the tab.
+is echoed back on click → POST `/focus`, where the leader raises the window (by its
+roster `folder`) and reveals the tab. `window` is the human label (logging/context only;
+the raise uses `folder` from the roster, not the URL).
 
 ## 3. App → Extension, focus  `POST http://127.0.0.1:39247/focus`
 
@@ -57,8 +59,15 @@ Sent when a ping or a dashboard row is clicked.
 { "sessionId": "b1f2…" }
 ```
 
-Extension looks up the matched terminal and calls `terminal.show()` (reveal + focus).
-The app separately raises Cursor to the front (`NSRunningApplication.activate`).
+The leader looks up the session's roster entry and:
+1. **Raises the owning window** — runs `cursor --reuse-window <entry.folder>` (the bundled
+   Cursor CLI). Cursor activates that window itself, crossing Spaces/fullscreen/minimized.
+2. **Reveals the terminal** — `terminal.show()` locally, or routes it to the owning
+   follower (§6).
+
+The app itself does nothing to windows (no `NSRunningApplication.activate`, no
+permissions). A brief throwaway Cursor forwarder process appears per focus (Cursor's
+single-instance model) — harmless.
 
 ## 4. App → Extension, dashboard roster  `GET http://127.0.0.1:39247/roster`
 
@@ -67,13 +76,14 @@ GLOBAL roster across all windows (see §6).
 
 ```jsonc
 [
-  { "sessionId": "b1f2…", "name": "frontend",   "state": "running",  "windowId": "64095-ixxrla", "window": "code-project",    "pid": 33263 },
-  { "sessionId": "c3d4…", "name": "db-migrate", "state": "needsYou", "windowId": "64491-rlwv9d", "window": "writing-project", "pid": 64731 }
+  { "sessionId": "b1f2…", "name": "frontend",   "state": "running",  "windowId": "64095-ixxrla", "window": "code-project",    "folder": "/Users/casper/code-project",    "pid": 33263 },
+  { "sessionId": "c3d4…", "name": "db-migrate", "state": "needsYou", "windowId": "64491-rlwv9d", "window": "writing-project", "folder": "/Users/casper/writing-project", "pid": 64731 }
 ]
 ```
 
 `windowId` = internal per-window id (focus routing); `window` = human label (the
-window's project/folder name) the dashboard groups by.
+window's project/folder name) the dashboard groups by; `folder` = the workspace's
+filesystem path, passed to `cursor --reuse-window` to raise that exact window (§3).
 
 ## 5. Dev/demo trigger  `open "claudenotch://dashboard"`
 
@@ -86,9 +96,11 @@ The first window to bind `39247` is the **leader/hub**; others are **followers**
 - **Follower → Leader** `POST /register` (heartbeat ~1.5s) and `POST /deregister`:
   ```jsonc
   { "windowId": "64491-rlwv9d", "callbackPort": 51328, "label": "writing-project",
+    "folder": "/Users/casper/writing-project",
     "terminals": [ { "pid": 64731, "name": "claudius" } ],
     "focused": false, "activeTerminalPid": 64731 }
   ```
+  (`folder` lets the leader raise this window via `cursor --reuse-window`.)
   The leader resolves a hook's PID chain against its OWN terminals AND every
   follower's registered `terminals`, so the global roster + pings span all windows.
 - **Leader → Follower** `POST http://127.0.0.1:<callbackPort>/focus` `{ "pid": 64731 }`:
@@ -98,6 +110,8 @@ The first window to bind `39247` is the **leader/hub**; others are **followers**
 
 ## Notes / known limits
 - Port `39247` is fixed (loopback only); the current leader owns it.
-- Cross-window focus reveals the terminal but does **not** yet raise that specific
-  window to the front (Phase 2b Step 2 — likely needs Accessibility/AX).
+- Cross-window focus raises the specific window across Spaces via `cursor
+  --reuse-window <folder>` (§3). Each focus flashes a throwaway Cursor forwarder process
+  (Cursor's single-instance model) — cosmetic. The private-WindowServer alternative
+  (no flash) no-ops on macOS 26 Tahoe.
 - Everything is local; nothing leaves the machine.
