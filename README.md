@@ -26,8 +26,9 @@ Surfaces your Claude Code agents (running in **Cursor** terminals) on the MacBoo
 Move your cursor up onto the **notch** → the dashboard drops down with all your
 agents (status counts, then each agent by name + state). Click a row to focus that
 tab; move your cursor away and it retracts. It's **summon-on-hover** (not always-on),
-so the notch stays clean when you're not looking. It shows the agents in the **one
-Cursor window** that owns the connection today (multi-window is the next phase).
+so the notch stays clean when you're not looking. It spans **all your Cursor windows**,
+**grouped by project** (leader/follower under the hood). Clicking an agent in another
+window focuses its terminal; *raising* that window fully to the front is still pending.
 
 See `PROTOCOL.md` for the exact wire format. The shape:
 

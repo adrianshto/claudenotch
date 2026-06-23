@@ -1,7 +1,8 @@
 # Claude Notch — IPC contract
 
-Three components. The extension owns a loopback HTTP server on `127.0.0.1:39247`
-(`/event`, `/focus`, `/roster`); the app is driven by the `claudenotch://` URL scheme.
+Three components. The **leader** window's extension owns a loopback HTTP server on
+`127.0.0.1:39247` (`/event`, `/focus`, `/roster`, `/register`, `/deregister`); the app
+is driven by the `claudenotch://` URL scheme. Multi-window via leader/follower — see §6.
 
 ```
 Claude Code hook ──POST /event──▶ Cursor extension ──open claudenotch://notify──▶ App (pings)
@@ -61,21 +62,42 @@ The app separately raises Cursor to the front (`NSRunningApplication.activate`).
 
 ## 4. App → Extension, dashboard roster  `GET http://127.0.0.1:39247/roster`
 
-The app fetches this when the dashboard is summoned (hover the notch).
+The app fetches this when the dashboard is summoned (hover the notch). It's the
+GLOBAL roster across all windows (see §6).
 
 ```jsonc
 [
-  { "sessionId": "b1f2…", "name": "frontend",   "state": "running" },
-  { "sessionId": "c3d4…", "name": "db-migrate", "state": "needsYou" }
+  { "sessionId": "b1f2…", "name": "frontend",   "state": "running",  "windowId": "64095-ixxrla", "window": "code-project",    "pid": 33263 },
+  { "sessionId": "c3d4…", "name": "db-migrate", "state": "needsYou", "windowId": "64491-rlwv9d", "window": "writing-project", "pid": 64731 }
 ]
 ```
+
+`windowId` = internal per-window id (focus routing); `window` = human label (the
+window's project/folder name) the dashboard groups by.
 
 ## 5. Dev/demo trigger  `open "claudenotch://dashboard"`
 
 Toggles the dashboard (fetches /roster first). For testing without hovering.
 
+## 6. Multi-window: leader/follower (extension ↔ extension)
+
+The first window to bind `39247` is the **leader/hub**; others are **followers**.
+
+- **Follower → Leader** `POST /register` (heartbeat ~1.5s) and `POST /deregister`:
+  ```jsonc
+  { "windowId": "64491-rlwv9d", "callbackPort": 51328, "label": "writing-project",
+    "terminals": [ { "pid": 64731, "name": "claudius" } ],
+    "focused": false, "activeTerminalPid": 64731 }
+  ```
+  The leader resolves a hook's PID chain against its OWN terminals AND every
+  follower's registered `terminals`, so the global roster + pings span all windows.
+- **Leader → Follower** `POST http://127.0.0.1:<callbackPort>/focus` `{ "pid": 64731 }`:
+  the follower finds its terminal with that `processId` and calls `terminal.show()`.
+- **Election**: a follower retries binding `39247` every ~3s; if the leader dies it
+  promotes. The leader prunes followers not seen for >5s.
+
 ## Notes / known limits
-- Port `39247` is fixed (loopback only); the extension owns it.
-- **Multi-window**: only the Cursor window whose extension bound the port handles
-  events / serves the roster. Cross-window aggregation is Phase 2b (app-as-hub).
+- Port `39247` is fixed (loopback only); the current leader owns it.
+- Cross-window focus reveals the terminal but does **not** yet raise that specific
+  window to the front (Phase 2b Step 2 — likely needs Accessibility/AX).
 - Everything is local; nothing leaves the machine.

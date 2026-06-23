@@ -32,12 +32,21 @@ Claude Code hook ──POST /event──▶ Cursor extension ──open claudeno
    its process-ancestor PID chain, POSTs `{event, hookEvent, pidChain, cwd, sessionId,
    message}` to the extension. Fails silently (exit 0) — never blocks an agent.
 2. **Extension** (`extension/extension.js`, plain JS, installed `local.claude-notch`) —
-   the brain. HTTP server on `127.0.0.1:39247`:
-   - `POST /event`: match PID chain → `Terminal.processId`, read `terminal.name`, update
-     the **roster** (sessionId → {name, state}), and fire a ping for Notification/Stop.
-   - `GET /roster`: returns the live roster JSON (the app fetches this on hover).
-   - `POST /focus`: `{sessionId}` → `terminal.show()` reveals + focuses that tab.
-   - Logs focus decisions to `~/.claude-notch/ext.log`.
+   the brain, with a **leader/follower** model for multi-window:
+   - The first window to bind `127.0.0.1:39247` is the **LEADER (hub)**. Every other
+     window is a **FOLLOWER** that runs a tiny callback server on an ephemeral port and
+     registers with the leader (heartbeat every 1.5s). If the leader dies, a follower
+     promotes (election retry every 3s). A lone window is just a leader with no followers
+     → identical to single-window behavior.
+   - Leader endpoints: `POST /event` (hook; resolves the PID chain against its OWN
+     terminals AND followers' registered terminals → updates the GLOBAL roster + pings),
+     `GET /roster` (app fetches on hover; returns all windows' agents), `POST /focus`
+     (`{sessionId}` → reveal locally OR route to the owning follower's callback port),
+     `POST /register` + `POST /deregister` (followers).
+   - Each roster entry: `{sessionId, name, state, windowId, window, pid}` — `window` is
+     the human label (the window's project/folder name via `vscode.workspace.name`), used
+     by the dashboard to group agents by window.
+   - Logs role + focus decisions to `~/.claude-notch/ext.log`.
 3. **App** (`app/`, SwiftUI menu-bar-only, built by `build-app.sh` → `ClaudeNotch.app`):
    - **Pings**: `NotchNotifier` shows a DynamicNotch on `claudenotch://notify`; tap →
      `Focus.request` (POST /focus) + raise Cursor.
@@ -117,10 +126,14 @@ rebuilt. Decouple later via /Applications + Login Item (deferred until iteration
 - ✅ **Phase 2a** — on-demand dashboard (DynamicNotchKit, summon-on-hover), real live roster
   via `GET /roster`, lifecycle-driven state, click-row-to-focus. Verified end-to-end,
   single window.
-- ⬜ **Phase 2b** — multi-window. Today only the ONE Cursor window that binds port 39247 is
-  tracked. Needs an app-as-hub refactor: app owns the inbound port; each window's extension
-  registers + reports its terminals + has a focus callback; app aggregates a global roster
-  and routes focus to the right window. (User runs several windows at once — this matters.)
+- ✅ **Phase 2b (Step 1)** — multi-window via leader/follower (above). Verified end-to-end:
+  the dashboard aggregates agents from ALL windows, grouped by window (project label), and
+  click-to-focus **routes into the owning follower window and reveals its terminal**.
+- ⬜ **Phase 2b (Step 2)** — raise the *specific* other window to the front on focus. Today
+  cross-window focus reveals the terminal but doesn't pull that window above sibling Cursor
+  windows (macOS won't let same-app windows steal focus easily; the app's `raiseCursor`
+  activates the app but not a specific window). Likely needs **Accessibility permission** +
+  AX window matching by title — deferred; flagged with the user.
 - ⬜ **Phase 3** — focus highlight: when the user clicks/focuses a terminal, make it visually
   obvious which one is active (purple glow / tab tint) so side-by-side terminals are
   distinguishable. See task notes; extensions can't style the terminal DOM (sandbox) — likely
@@ -128,7 +141,10 @@ rebuilt. Decouple later via /Applications + Login Item (deferred until iteration
 
 ## Known limitations
 
-- Single window (port 39247 owner) only — see Phase 2b.
+- Multi-window roster + focus-routing work; **raising the specific other window** to the
+  front on click does not yet (Phase 2b Step 2 — see Status).
+- All windows' extensions must be the **same version** — a stale one holding the port as a
+  pre-leader/follower build breaks the model. After updating, reload every Cursor window.
 - Dashboard populates from lifecycle events, so a brand-new session shows only after its
   first event (could seed known state immediately — minor TODO).
 - Agent↔tab match needs `claude` running **directly** in the Cursor terminal (not via

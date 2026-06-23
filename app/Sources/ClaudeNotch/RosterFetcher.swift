@@ -2,7 +2,12 @@ import Foundation
 
 /// Pulls the live agent roster from the Cursor extension's GET /roster endpoint.
 enum RosterFetcher {
-    private struct Item: Decodable { let sessionId: String; let name: String; let state: String }
+    private struct Item: Decodable {
+        let sessionId: String
+        let name: String
+        let state: String
+        let window: String?
+    }
 
     /// Fetches the current roster (empty on any failure).
     static func fetch() async -> [Agent] {
@@ -16,7 +21,7 @@ enum RosterFetcher {
         return items.map {
             Agent(id: $0.sessionId, name: $0.name,
                   state: AgentState(rawValue: $0.state) ?? .idle,
-                  windowId: "", pid: 0)
+                  windowId: "", pid: 0, window: $0.window ?? "")
         }
     }
 }

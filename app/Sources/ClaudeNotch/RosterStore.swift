@@ -36,6 +36,7 @@ struct Agent: Identifiable, Equatable, Sendable {
     var state: AgentState
     var windowId: String
     var pid: Int
+    var window: String = ""   // human label for the Cursor window (its project/folder)
 }
 
 /// The single source of truth the dashboard renders. Fed by the hub (hook +

@@ -2,7 +2,7 @@
   "name": "claude-notch",
   "displayName": "Claude Notch",
   "description": "Notch notifications when a Claude Code agent in a Cursor terminal needs your attention.",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.74.0"

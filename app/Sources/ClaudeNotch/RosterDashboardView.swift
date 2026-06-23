@@ -17,8 +17,17 @@ struct RosterDashboardView: View {
             .font(.system(size: 12, weight: .semibold, design: .rounded))
 
             if store.hasAny {
-                ForEach(store.agents) { agent in
-                    AgentRow(agent: agent) { onPick(agent) }
+                ForEach(groups, id: \.window) { group in
+                    if showWindowHeaders {
+                        Text(group.window.isEmpty ? "window" : group.window)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .textCase(.uppercase)
+                            .padding(.top, 4)
+                    }
+                    ForEach(group.agents) { agent in
+                        AgentRow(agent: agent) { onPick(agent) }
+                    }
                 }
             } else {
                 Text("No active agents")
@@ -30,6 +39,19 @@ struct RosterDashboardView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .frame(width: 300, alignment: .leading)
+    }
+
+    /// Agents grouped by their Cursor window (project), windows sorted by name.
+    private var groups: [(window: String, agents: [Agent])] {
+        let byWindow = Dictionary(grouping: store.agents, by: { $0.window })
+        return byWindow.keys.sorted().map { key in
+            (window: key, agents: byWindow[key]!.sorted { $0.name < $1.name })
+        }
+    }
+
+    /// Only show the per-window headers when more than one window is present.
+    private var showWindowHeaders: Bool {
+        Set(store.agents.map(\.window)).count > 1
     }
 
     private func count(_ state: AgentState, _ n: Int) -> some View {
