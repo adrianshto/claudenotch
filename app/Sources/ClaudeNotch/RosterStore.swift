@@ -54,7 +54,7 @@ struct Agent: Identifiable, Equatable, Sendable {
 }
 
 /// The single source of truth the dashboard renders. Fed by the hub (hook +
-/// extension) later; for now it can load fake data so we can see the UI.
+/// extension) via `apply(_:)` on each /roster fetch.
 @MainActor
 final class RosterStore: ObservableObject {
     @Published var agents: [Agent] = []
@@ -66,13 +66,4 @@ final class RosterStore: ObservableObject {
     var hasAny: Bool  { !agents.isEmpty }
 
     func apply(_ agents: [Agent]) { self.agents = agents }
-
-    func loadFake() {
-        agents = [
-            Agent(id: "1", name: "api-server", state: .running,  windowId: "w1", pid: 1),
-            Agent(id: "2", name: "worker",     state: .running,  windowId: "w1", pid: 2),
-            Agent(id: "3", name: "frontend",   state: .done,     windowId: "w1", pid: 3),
-            Agent(id: "4", name: "db-migrate", state: .needsYou, windowId: "w1", pid: 4),
-        ]
-    }
 }

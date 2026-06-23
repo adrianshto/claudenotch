@@ -7,10 +7,10 @@ struct ClaudeNotchApp: App {
     var body: some Scene {
         // Menubar-only app (no window). LSUIElement=YES hides the dock icon.
         MenuBarExtra("Claude Notch", systemImage: "bell.badge.fill") {
-            Button("Test notch ping") { appDelegate.testPing() }
+            Text("Claude Notch — hover the notch for your agents")
+                .font(.caption)
             Divider()
-            Button("Show dashboard (demo)") { appDelegate.showDashboardDemo() }
-            Button("Hide dashboard") { appDelegate.hideDashboard() }
+            Button("Test Notch Ping") { appDelegate.testPing() }
             Divider()
             Button("Quit Claude Notch") { NSApplication.shared.terminate(nil) }
         }

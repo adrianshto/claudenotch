@@ -54,14 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Demo: populate fake agents and show the dashboard so we can see the animation.
-    func showDashboardDemo() {
-        roster.loadFake()
-        dashboard.show()
-    }
-
-    func hideDashboard() { dashboard.hide() }
-
     /// Entry point for `open "claudenotch://notify?..."` fired by the Cursor extension.
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls { handle(url) }
