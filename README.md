@@ -46,7 +46,8 @@ Claude Code hook ─POST /event─▶ Cursor extension ─open claudenotch://not
   on 5 events (`Notification`, `Stop`, `SessionStart`, `UserPromptSubmit`,
   `SessionEnd`), async so it never delays an agent.
 - ✅ **Extension** — installed in Cursor as `local.claude-notch` (v0.9.0).
-- ✅ **Notch app** — built at `app/ClaudeNotch.app` (no Xcode project needed).
+- ✅ **Notch app** — installed at `/Applications/ClaudeNotch.app` and **auto-starts at
+  login** (LaunchAgent `com.casper.claudenotch`). Built from `app/` (no Xcode project needed).
 
 ## 1. The notch app
 
@@ -55,19 +56,25 @@ Already built by `app/build-app.sh` into `app/ClaudeNotch.app` — a menu-bar-on
 plain Swift package (`app/Package.swift` + `app/Sources/ClaudeNotch/*.swift`),
 verified to compile + link against the real library.
 
-**Run it:** `open ~/Desktop/ClaudeNotch/app/ClaudeNotch.app` → a 🔔 appears in the
-menu bar. Its menu has **"Test notch ping"** to confirm the notch renders + taps work.
+**It's already running and auto-starts at login** — a 🔔 in the menu bar, launched from
+`/Applications/ClaudeNotch.app` by the LaunchAgent `com.casper.claudenotch`. Its menu has
+**"Test notch ping"** to confirm the notch renders + taps work. No system permissions
+needed — window focusing is delegated to Cursor's CLI via the extension.
 
-**Rebuild after code edits:** `cd app && ./build-app.sh` (uses the Xcode toolchain
-for the SwiftUI macros DynamicNotchKit needs; signs with a stable self-signed identity
-if set up, else ad-hoc; registers the URL scheme). The app needs **no system
-permissions** — window focusing is delegated to Cursor's CLI via the extension.
+**Rebuild after code edits:** `cd app && ./build-app.sh` (Xcode toolchain for the SwiftUI
+macros DynamicNotchKit needs; signs with a stable identity if set up, else ad-hoc). Since
+it's installed, this **auto-redeploys to /Applications** + re-registers the URL handler.
+Then restart the running copy: `launchctl kickstart -k gui/$(id -u)/com.casper.claudenotch`.
 
-**Daily use:** move `ClaudeNotch.app` to `/Applications` and add it to **Login Items**
-(System Settings → General → Login Items) so it's always running and registered.
+**Fresh install on a new machine:** `cd app && ./build-app.sh --deploy` (copies to
+/Applications), then load the Login Item:
+```
+cp <repo>/app/com.casper.claudenotch.plist ~/Library/LaunchAgents/   # if not present
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.casper.claudenotch.plist
+```
+It shows under System Settings → General → Login Items ("Allow in the Background").
 
-**Prefer Xcode?** (e.g. for Phase 2 work) Open `app/Package.swift` in Xcode and Run —
-the package and Info.plist are already set up; no "new project + drag files" dance.
+**Prefer Xcode?** Open `app/Package.swift` in Xcode and Run — package + Info.plist are set up.
 
 ## 2. Extension (installed)
 
@@ -120,5 +127,10 @@ then re-run the install command.
 
 - Extension: `"/Applications/Cursor.app/Contents/Resources/app/bin/cursor" --uninstall-extension local.claude-notch`
 - Hook: remove the `"hooks"` block from `~/.claude/settings.json` (or use `/hooks`).
-- App: quit it, move `ClaudeNotch.app` to Trash.
+- App + auto-start:
+  ```
+  launchctl bootout gui/$(id -u)/com.casper.claudenotch
+  rm ~/Library/LaunchAgents/com.casper.claudenotch.plist
+  rm -rf /Applications/ClaudeNotch.app
+  ```
 - `rm -rf ~/.claude-notch`

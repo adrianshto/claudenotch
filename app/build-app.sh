@@ -37,10 +37,25 @@ else
 fi
 codesign --verify --verbose=2 "$APP"
 
-# Register the URL scheme with Launch Services so claudenotch:// routes here.
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
-"$LSREGISTER" -f "$PWD/$APP" || true
 
-echo "==> done: $PWD/$APP"
-echo "    Launch:  open '$PWD/$APP'"
-echo "    For daily use: move it to /Applications and add to Login Items."
+# If ClaudeNotch is installed for daily use (a copy in /Applications) — or --deploy is
+# passed — push the fresh build there and make /Applications the canonical
+# claudenotch:// handler, so the always-on Login Item copy stays current after every
+# rebuild. Otherwise just register this local dev build.
+DEPLOYED="/Applications/$APP"
+if [ -d "$DEPLOYED" ] || [ "${1:-}" = "--deploy" ]; then
+  echo "==> deploying to /Applications (canonical run location)"
+  rm -rf "$DEPLOYED"
+  cp -R "$APP" "$DEPLOYED"
+  "$LSREGISTER" -f "$DEPLOYED" || true
+  echo "==> done: $DEPLOYED  (built copy: $PWD/$APP)"
+  echo "    Restart the running app:  launchctl kickstart -k gui/\$(id -u)/com.casper.claudenotch"
+else
+  # Register the local build so claudenotch:// routes here for dev use.
+  "$LSREGISTER" -f "$PWD/$APP" || true
+  echo "==> done: $PWD/$APP"
+  echo "    Launch:  open '$PWD/$APP'"
+  echo "    Install for daily use (copies to /Applications + becomes the handler):"
+  echo "      ./build-app.sh --deploy"
+fi

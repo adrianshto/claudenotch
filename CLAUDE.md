@@ -106,7 +106,7 @@ until you rebuild/reinstall (commands below).
 |---|---|---|
 | Hook | `hook/notify-hook.js` | `~/.claude-notch/notify-hook.js` + `hooks` block in `~/.claude/settings.json` (5 events) |
 | Extension | `extension/extension.js`, `package.json` | `~/.cursor/extensions/local.claude-notch-<ver>` (currently 0.9.0) |
-| App | `app/Sources/ClaudeNotch/*.swift`, `app/Package.swift`, `app/Info.plist` | runs from `app/ClaudeNotch.app` (NOT yet in /Applications) |
+| App | `app/Sources/ClaudeNotch/*.swift`, `app/Package.swift`, `app/Info.plist` | **runs from `/Applications/ClaudeNotch.app`** (auto-starts at login via LaunchAgent `~/Library/LaunchAgents/com.casper.claudenotch.plist`); built in `app/ClaudeNotch.app`, deployed there by `build-app.sh` |
 
 App source files: `ClaudeNotchApp` (MenuBarExtra), `AppDelegate` (URL handling, hover
 wiring, retract watcher; clicks just call `Focus.request`), `NotchNotifier`+`NotchContent` (pings),
@@ -114,8 +114,10 @@ wiring, retract watcher; clicks just call `Focus.request`), `NotchNotifier`+`Not
 (dashboard), `RosterStore` (Agent/AgentState model), `ClickCatcher` (AppKit tap target
 that works in non-key notch panels), `Focus` (POST /focus), `Log`.
 
-⚠️ The app runs from this folder — moving/deleting it breaks `claudenotch://` until
-rebuilt. Decouple later via /Applications + Login Item (deferred until iteration settles).
+✅ The app is **installed**: it runs from `/Applications/ClaudeNotch.app` and auto-starts
+at login (LaunchAgent `com.casper.claudenotch`). This `app/` folder is **source only** —
+editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Applications
+(see Rebuild). The Desktop copy is no longer the `claudenotch://` handler.
 
 ## Invariants (change in lockstep)
 
@@ -138,10 +140,13 @@ rebuilt. Decouple later via /Applications + Login Item (deferred until iteration
   then `"/Applications/Cursor.app/Contents/Resources/app/bin/cursor" --install-extension claude-notch-<ver>.vsix --force`,
   then **Reload Cursor** (⌘⇧P → Developer: Reload Window). Reload clears the in-memory
   roster — it repopulates as lifecycle events fire.
-- **App:** `cd app && ./build-app.sh` (sets DEVELOPER_DIR, builds release, bundles,
-  signs with the stable "ClaudeNotch Self-Signed" cert if present — see `setup-signing.sh`
-  — else ad-hoc, registers the URL scheme), then relaunch `ClaudeNotch.app`. The app needs
-  no system permissions, so signing is just for a stable identity (optional).
+- **App:** `cd app && ./build-app.sh` (sets DEVELOPER_DIR, builds release, bundles, signs
+  with the stable "ClaudeNotch Self-Signed" cert if present — see `setup-signing.sh` — else
+  ad-hoc). Because a copy exists in /Applications, it **auto-redeploys there** + re-registers
+  the URL handler; then restart the running app:
+  `launchctl kickstart -k gui/$(id -u)/com.casper.claudenotch`. (First-time install on a new
+  machine: `./build-app.sh --deploy`, then load the LaunchAgent — see README. The app needs
+  no system permissions; signing is just a stable identity, optional.)
 
 ## Test / debug
 
