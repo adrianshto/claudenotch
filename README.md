@@ -75,13 +75,12 @@ macros DynamicNotchKit needs; signs with a stable identity if set up, else ad-ho
 it's installed, this **auto-redeploys to /Applications** + re-registers the URL handler.
 Then restart the running copy: `launchctl kickstart -k gui/$(id -u)/com.casper.claudenotch`.
 
-**Fresh install on a new machine:** `cd app && ./build-app.sh --deploy` (copies to
-/Applications), then load the Login Item:
-```
-cp <repo>/app/com.casper.claudenotch.plist ~/Library/LaunchAgents/   # if not present
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.casper.claudenotch.plist
-```
-It shows under System Settings → General → Login Items ("Allow in the Background").
+**Fresh install on a new machine (or a clean clone): just run `./install.sh`** from the
+repo root. It sets up everything — copies the hook + wires it into `~/.claude/settings.json`
+(non-clobbering), builds + deploys the app to /Applications, loads the Login Item, and
+packages + installs the Cursor extension — then **restart Cursor**. Idempotent; needs full
+Xcode, Node, and Cursor. (The app shows under System Settings → General → Login Items →
+"Allow in the Background".)
 
 **Prefer Xcode?** Open `app/Package.swift` in Xcode and Run — package + Info.plist are set up.
 

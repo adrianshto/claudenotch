@@ -163,6 +163,12 @@ editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Ap
 
 ## Rebuild / reinstall after editing source
 
+**Fresh setup from a clean clone (no prior context): `./install.sh`** — does all four
+steps below (hook script + wire the 5 hooks into `~/.claude/settings.json` non-clobbering +
+build/deploy the app + load the Login Item + package/install the extension), then **restart
+Cursor**. Idempotent. Needs full Xcode, Node, Cursor. The per-component commands below are
+for iterating on one piece after it's already installed:
+
 - **Hook:** `cp hook/notify-hook.js ~/.claude-notch/notify-hook.js`
 - **Extension:** `cd extension && npx @vscode/vsce package --allow-missing-repository --no-dependencies`,
   then `"/Applications/Cursor.app/Contents/Resources/app/bin/cursor" --install-extension claude-notch-<ver>.vsix --force`,
