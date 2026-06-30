@@ -11,10 +11,12 @@ final class DashboardController {
     private let notch: DynamicNotch<RosterDashboardView, EmptyView, EmptyView>
     private(set) var shown = false
 
-    init(store: RosterStore, onPick: @escaping (Agent) -> Void) {
+    init(store: RosterStore,
+         onPick: @escaping (Agent) -> Void,
+         onClearFinished: @escaping () -> Void) {
         self.store = store
         self.notch = DynamicNotch(hoverBehavior: [.keepVisible]) {
-            RosterDashboardView(store: store, onPick: onPick)
+            RosterDashboardView(store: store, onPick: onPick, onClearFinished: onClearFinished)
         }
     }
 

@@ -14,9 +14,15 @@ struct ClaudeNotchApp: App {
                 .font(.caption)
             Divider()
             Toggle("Quiet the window I'm working in", isOn: $focusMute)
-            Button("Test Notch Ping") { appDelegate.testPing() }
             Divider()
-            Button("Quit Claude Notch") { NSApplication.shared.terminate(nil) }
+            Button("Clear finished") { appDelegate.clearFinished() }
+            Button("Restart") { NotchControl.restart() }
+            Divider()
+            Button("Test Notch Ping") { appDelegate.testPing() }
+            Button("Open logs") { NotchControl.openLogs() }
+            Divider()
+            // Real quit: bootout both via launchctl so KeepAlive doesn't respawn the app.
+            Button("Quit Claude Notch") { NotchControl.quit() }
         }
     }
 }

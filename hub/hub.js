@@ -24,6 +24,17 @@ const HOST = '127.0.0.1';
 const LOG = path.join(os.homedir(), '.claude-notch', 'hub.log');
 const PING_HOLD_MS = 25_000;   // long-poll hold
 const DONE_PURPLE_MS = 120_000;
+// Auto-expiry — the roster used to grow unbounded because entries only left on a
+// clean SessionEnd (which often never fires: closed tab, crash, kill). Now we sweep:
+//   • idle  = "opened but never used" → drop after IDLE_EXPIRE_MS of no events.
+//   • done  = finished a while ago    → drop after DONE_EXPIRE_MS (you've seen it).
+// running / needsYou never expire — they're live and actionable.
+const IDLE_EXPIRE_MS  = 20 * 60_000;        // 20 min
+const DONE_EXPIRE_MS  = 60 * 60_000;        // 60 min
+const STALE_EXPIRE_MS = 12 * 60 * 60_000;   // 12h catch-all for ANY state — clears
+                                            // orphaned running/needsYou entries whose
+                                            // session crashed/closed without SessionEnd.
+const PRUNE_EVERY_MS  = 60_000;             // sweep cadence
 
 function log(line) {
   try { fs.appendFileSync(LOG, `${new Date().toISOString()}  ${line}\n`); } catch (_) {}
@@ -90,11 +101,21 @@ function applyEvent(p) {
       state = prevState || 'idle';
   }
 
+  // doneAt = when it FIRST entered `done`, preserved across later done-state events.
+  // CRITICAL: Claude Code re-fires "waiting for you" Notification nudges while a
+  // session sits done. If we restamped doneAt on each, the done-expiry sweep (and the
+  // "just done" highlight) would never settle — only a fresh transition INTO done
+  // (re)stamps it.
+  const doneAt = state === 'done'
+    ? ((prevState === 'done' && prev && prev.doneAt) ? prev.doneAt : Date.now())
+    : undefined;
+
   const entry = {
     sessionId, name, state,
     window: folderName, folder: cwd, app: appName,
     tty: p.tty || (prev && prev.tty) || null,
-    doneAt: state === 'done' ? Date.now() : (prev && prev.doneAt) || undefined,
+    ts: Date.now(),   // last-event time — drives idle/stale expiry
+    doneAt,
   };
   if (state !== 'done') delete entry.doneAt;
   roster.set(sessionId, entry);
@@ -183,8 +204,35 @@ function focusSession(sessionId) {
   });
 }
 
-function rosterArray() {
+// Sweep stale entries so the roster (and the notch) stays bounded. See the
+// IDLE_EXPIRE_MS / DONE_EXPIRE_MS notes above.
+function prune() {
   const now = Date.now();
+  let removed = 0;
+  for (const [id, e] of roster) {
+    const idleStale  = e.state === 'idle' && now - (e.ts || 0) > IDLE_EXPIRE_MS;
+    const doneStale  = e.state === 'done' && now - (e.doneAt || e.ts || 0) > DONE_EXPIRE_MS;
+    // Catch-all: even a "live" running/needsYou entry is abandoned if nothing has
+    // touched it in 12h — its session is long gone. This is the backstop that keeps
+    // the roster bounded when SessionEnd never fires.
+    const stale      = now - (e.ts || 0) > STALE_EXPIRE_MS;
+    if (idleStale || doneStale || stale) { roster.delete(id); removed++; }
+  }
+  if (removed) log(`prune removed ${removed} stale (idle>${IDLE_EXPIRE_MS / 60000}m, done>${DONE_EXPIRE_MS / 60000}m, any>${STALE_EXPIRE_MS / 3600000}h) → ${roster.size} left`);
+}
+
+// Drop finished/idle sessions on demand (the dashboard's "Clear finished" button
+// and `claudenotch clear`). Keeps running + needsYou — those are still live.
+function clearInactive(all) {
+  let removed = 0;
+  for (const [id, e] of roster) {
+    if (all || e.state === 'done' || e.state === 'idle') { roster.delete(id); removed++; }
+  }
+  log(`clear removed ${removed} (all=${!!all}) → ${roster.size} left`);
+  return removed;
+}
+
+function rosterArray() {
   return [...roster.values()].map((e) => {
     const out = {
       sessionId: e.sessionId, name: e.name, state: e.state, window: e.window,
@@ -233,6 +281,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && url === '/clear') {
+    readBody(req, (p) => {
+      const removed = clearInactive(p && p.all === true);
+      // Return the authoritative post-clear roster so the app can refresh the live
+      // dashboard from this response — no second round-trip, no blank-on-failure.
+      sendJSON(res, { removed, roster: rosterArray() });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && url === '/focus') {
     readBody(req, (p) => {
       if (p.sessionId) focusSession(p.sessionId);
@@ -250,4 +308,8 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, HOST, () => log(`hub listening ${HOST}:${PORT} (DONE_PURPLE_MS=${DONE_PURPLE_MS})`));
+server.listen(PORT, HOST, () => log(`hub listening ${HOST}:${PORT} (DONE_PURPLE_MS=${DONE_PURPLE_MS}, idle_expire=${IDLE_EXPIRE_MS / 60000}m, done_expire=${DONE_EXPIRE_MS / 60000}m)`));
+
+// Periodic sweep of stale entries (idle/done). unref() so it never holds the
+// process open on its own — the HTTP server is what keeps us alive.
+setInterval(prune, PRUNE_EVERY_MS).unref();

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# claudenotch — one command to control the Claude Notch hub + notch app.
+#
+# Why this exists: both pieces run under launchctl with KeepAlive=true, so a plain
+# `kill` just respawns them, and launching the app by hand (`open ClaudeNotch.app`)
+# leaves copies launchctl doesn't manage — that's how you end up with "several
+# versions running". `stop` here boots the launch agents FIRST (killing KeepAlive),
+# THEN sweeps any strays, so there's exactly one clean way to stop and restart.
+#
+# Stray-sweeping is conservative: it only ever kills processes whose executable is
+# actually `node` (the hub) or `ClaudeNotch` (the app), so an editor or `tail` that
+# merely has the file path on its command line is never touched.
+set -uo pipefail
+
+UID_="$(id -u)"
+NODE="$(command -v node || echo /opt/homebrew/bin/node)"
+NOTCH_DIR="$HOME/.claude-notch"
+REPO="$HOME/claudenotch"
+LA="$HOME/Library/LaunchAgents"
+HUB_LABEL="com.claudenotch.hub"
+APP_LABEL="com.casper.claudenotch"
+PORT=39247
+
+# argv-match patterns (extended regex for pgrep -f). Safety comes from the comm
+# guard in pids_for(), not from these — they only pick candidates.
+HUB_PAT="\\.claude-notch/hub\\.js"
+APP_PATS=("/Applications/ClaudeNotch\\.app/Contents/MacOS/ClaudeNotch" "claudenotch/app/.*/MacOS/ClaudeNotch")
+
+c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_yel=$'\033[33m'
+
+bootout()   { launchctl bootout "gui/$UID_/$1" 2>/dev/null || true; }
+bootstrap() { launchctl bootstrap "gui/$UID_" "$LA/$1.plist" 2>/dev/null || true; }
+loaded()    { launchctl print "gui/$UID_/$1" >/dev/null 2>&1; }
+hub_up()    { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/roster" 2>/dev/null; }
+dot()       { [ "$1" = ok ] && printf '%s●%s' "$c_grn" "$c_reset" || printf '%s●%s' "$c_red" "$c_reset"; }
+
+# Print PIDs whose argv matches $1 AND whose executable name contains $2. The comm
+# guard is what makes the sweep safe: a vim/tail/grep on hub.js has comm 'vim'/'tail',
+# not 'node', so it's never returned here.
+pids_for() {
+  local pat="$1" needle="$2" p comm
+  for p in $(pgrep -f "$pat" 2>/dev/null || true); do
+    comm="$(ps -o comm= -p "$p" 2>/dev/null || true)"
+    case "$comm" in *"$needle"*) echo "$p" ;; esac
+  done
+}
+hub_pids() { pids_for "$HUB_PAT" node; }
+app_pids() { local pat; for pat in "${APP_PATS[@]}"; do pids_for "$pat" ClaudeNotch; done | sort -u; }
+
+stop() {
+  echo "==> stopping…"
+  bootout "$HUB_LABEL"
+  bootout "$APP_LABEL"
+  # KeepAlive is now off (booted out) — safe to sweep strays without them respawning.
+  local p killed=0
+  for p in $(hub_pids) $(app_pids); do kill "$p" 2>/dev/null && killed=$((killed + 1)); done
+  sleep 0.4
+  for p in $(hub_pids) $(app_pids); do kill -9 "$p" 2>/dev/null || true; done   # force survivors
+  echo "    ${c_grn}stopped${c_reset} (swept ${killed} process(es))"
+}
+
+start() {
+  echo "==> starting…"
+  local missing=0 L
+  for L in "$HUB_LABEL" "$APP_LABEL"; do
+    [ -f "$LA/$L.plist" ] || { echo "    ${c_red}✗ missing $LA/$L.plist${c_reset} — run install-standalone.sh"; missing=1; }
+  done
+  [ "$missing" = 1 ] && return 1
+  bootstrap "$HUB_LABEL"
+  bootstrap "$APP_LABEL"
+  # Brief readiness wait (up to ~2s) so the status below reflects the real state.
+  local i; for i in $(seq 1 10); do hub_up && break; sleep 0.2; done
+  status
+}
+
+restart() { stop; sleep 0.3; start; }
+
+status() {
+  local hub_list app_list hp ap l1 l2
+  hub_list="$(hub_pids)"; app_list="$(app_pids)"
+  hp="$(printf '%s\n' "$hub_list" | grep -c .)"
+  ap="$(printf '%s\n' "$app_list" | grep -c .)"
+
+  echo "Claude Notch"
+  if [ "$hp" -ge 1 ]; then
+    if hub_up; then
+      echo "  $(dot ok) hub   running   pid $(printf '%s\n' "$hub_list" | head -1)   :$PORT"
+    else
+      echo "  $(dot ok) hub   running   pid $(printf '%s\n' "$hub_list" | head -1)   ${c_yel}(port $PORT not answering!)${c_reset}"
+    fi
+  else
+    echo "  $(dot bad) hub   stopped"
+  fi
+  if [ "$ap" -ge 1 ]; then
+    echo "  $(dot ok) app   running   pid $(printf '%s\n' "$app_list" | head -1)"
+  else
+    echo "  $(dot bad) app   stopped"
+  fi
+
+  loaded "$HUB_LABEL" && l1="loaded" || l1="NOT loaded"
+  loaded "$APP_LABEL" && l2="loaded" || l2="NOT loaded"
+  echo "  ${c_dim}launch agents: hub $l1 · app $l2${c_reset}"
+
+  [ "$hp" -gt 1 ] && echo "  ${c_yel}⚠ $hp hub processes (expected 1) — run 'claudenotch restart'${c_reset}"
+  [ "$ap" -gt 1 ] && echo "  ${c_yel}⚠ $ap app processes (expected 1) — run 'claudenotch restart'${c_reset}"
+
+  if hub_up; then
+    local r; r="$(curl -s --max-time 2 "http://127.0.0.1:$PORT/roster" 2>/dev/null || true)"
+    [ -n "$r" ] && echo "  ${c_dim}roster: $(printf '%s' "$r" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const a=JSON.parse(s);const by={};for(const x of a)by[x.state]=(by[x.state]||0)+1;process.stdout.write(`${a.length} agents`+(a.length?"  "+Object.entries(by).map(([k,v])=>k+":"+v).join(" "):""))}catch(e){process.stdout.write("unparseable")}})' 2>/dev/null)${c_reset}"
+  fi
+}
+
+clear_roster() {
+  if ! hub_up; then echo "${c_red}✗ hub not running${c_reset} — 'claudenotch start' first"; return 1; fi
+  if ! command -v curl >/dev/null; then echo "${c_red}✗ curl not found${c_reset}"; return 1; fi
+  local resp; resp="$(curl -s --max-time 2 -X POST "http://127.0.0.1:$PORT/clear" \
+    -H 'Content-Type: application/json' -d '{}' 2>/dev/null)"; local rc=$?
+  local n; n="$(printf '%s' "$resp" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const v=JSON.parse(s).removed;process.stdout.write(Number.isInteger(v)?String(v):"?")}catch(e){process.stdout.write("?")}})' 2>/dev/null)"
+  if [ "$rc" -ne 0 ] || [ "$n" = "?" ]; then
+    echo "${c_red}✗ clear failed${c_reset} (hub reachable but returned no valid response)"; return 1
+  fi
+  echo "${c_grn}cleared $n finished/idle session(s)${c_reset}"
+}
+
+rebuild() {
+  [ -d "$REPO/app" ] || { echo "${c_red}✗ source not found at $REPO/app${c_reset}"; exit 1; }
+  echo "==> syncing hub + hook from $REPO"
+  if [ -f "$REPO/hub/hub.js" ]; then cp "$REPO/hub/hub.js" "$NOTCH_DIR/hub.js"
+  else echo "    ${c_yel}⚠ $REPO/hub/hub.js missing — keeping existing${c_reset}"; fi
+  if [ -f "$REPO/hook/notify-hook.js" ]; then cp "$REPO/hook/notify-hook.js" "$NOTCH_DIR/notify-hook.js"
+  else echo "    ${c_yel}⚠ $REPO/hook/notify-hook.js missing — keeping existing${c_reset}"; fi
+  stop
+  echo "==> building app (Swift release build — takes a moment)…"
+  if ( cd "$REPO/app" && ./build-app.sh --deploy ); then
+    start
+  else
+    echo "${c_red}✗ build failed — tool is now STOPPED.${c_reset}"
+    echo "  Fix the build then 'claudenotch rebuild', or 'claudenotch start' to run the previous build."
+    exit 1
+  fi
+}
+
+logs() {
+  local which="${1:-hub}"
+  case "$which" in
+    hub)    tail -n 40 -f "$NOTCH_DIR/hub.log" ;;
+    events) tail -n 40 -f "$NOTCH_DIR/events.log" ;;
+    app)    tail -n 40 -f "$NOTCH_DIR/app.log" ;;
+    all)    tail -n 20 -f "$NOTCH_DIR/hub.log" "$NOTCH_DIR/events.log" "$NOTCH_DIR/app.log" ;;
+    *)      echo "usage: claudenotch logs [hub|events|app|all]"; return 1 ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+claudenotch — control the Claude Notch hub + notch app
+
+  claudenotch status            show what's running (default)
+  claudenotch start             start hub + app (via launchctl)
+  claudenotch stop              stop both, sweeping any stray copies
+  claudenotch restart           stop then start — the clean reset
+  claudenotch clear             drop finished/idle sessions from the notch now
+  claudenotch rebuild           sync hub+hook, rebuild the app, restart everything
+  claudenotch logs [hub|events|app|all]    tail a log (default: hub)
+EOF
+}
+
+cmd="${1:-status}"; shift || true
+case "$cmd" in
+  start)              start ;;
+  stop)               stop ;;
+  restart)            restart ;;
+  status)             status ;;
+  clear)              clear_roster ;;
+  rebuild)            rebuild ;;
+  logs)               logs "${1:-hub}" ;;
+  -h|--help|help)     usage ;;
+  *) echo "unknown command: $cmd"; echo; usage; exit 1 ;;
+esac

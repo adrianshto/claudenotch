@@ -22,10 +22,20 @@ SETTINGS="$HOME/.claude/settings.json"
 NODE="$(command -v node || true)"
 [ -z "$NODE" ] && { echo "✗ Node not found — install Node first (brew install node)."; exit 1; }
 
-echo "==> 1/5  hook + hub → $NOTCH_DIR"
+echo "==> 1/5  hook + hub + control CLI → $NOTCH_DIR"
 mkdir -p "$NOTCH_DIR"
 cp "$REPO/hook/notify-hook.js" "$NOTCH_DIR/notify-hook.js"
 cp "$REPO/hub/hub.js"          "$NOTCH_DIR/hub.js"
+# 'claudenotch' control command (start/stop/restart/status/clear/rebuild/logs),
+# symlinked into the same bin dir as node (already on PATH).
+cp "$REPO/bin/claudenotch"     "$NOTCH_DIR/claudenotch"
+chmod +x "$NOTCH_DIR/claudenotch"
+BINDIR="$(dirname "$NODE")"
+if ln -sf "$NOTCH_DIR/claudenotch" "$BINDIR/claudenotch" 2>/dev/null; then
+  echo "    installed 'claudenotch' → $BINDIR/claudenotch"
+else
+  echo "    (couldn't symlink into $BINDIR — run via $NOTCH_DIR/claudenotch or add it to PATH)"
+fi
 
 echo "==> 2/5  terminal-notifier (banner fallback)"
 if ! command -v terminal-notifier >/dev/null 2>&1; then
@@ -80,6 +90,7 @@ done
 
 echo
 echo "✅ Done. Hub + notch app are running and auto-start at login."
+echo "   Control it any time with:  claudenotch status | restart | stop | start | clear"
 echo "   Test: run 'claude' in a fresh Terminal.app tab, let it finish → the notch drops down."
 echo "   Click a Terminal/iTerm ping or dashboard row → it jumps to that exact tab."
 echo "   (Claude desktop app: click raises the app; per-chat jump is gated off by Anthropic — see README-STANDALONE.md.)"
