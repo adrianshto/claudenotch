@@ -180,10 +180,54 @@ function runOsa(script, tag, sessionId) {
   });
 }
 
+// Claude desktop deep link: the app maps our CLI session id to an internal
+// local_* session whose json (claude-code-sessions/<org>/<proj>/local_*.json)
+// carries bridgeSessionIds — and `claude://code/<bridgeId>` is the app's own
+// jump-to-chat URL. As of 2026-07-17 the handler logs "code session deep link
+// gated off" (remote feature flag) and does NOT navigate — but the URL passes
+// validation, so we fire it anyway ahead of the app-level raise: the day the
+// flag flips, clicks start landing on the exact chat with no code change here.
+function claudeBridgeId(cliSessionId) {
+  try {
+    const root = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions');
+    for (const org of fs.readdirSync(root)) {
+      const orgDir = path.join(root, org);
+      if (!fs.statSync(orgDir).isDirectory()) continue;
+      for (const proj of fs.readdirSync(orgDir)) {
+        const projDir = path.join(orgDir, proj);
+        if (!fs.statSync(projDir).isDirectory()) continue;
+        for (const f of fs.readdirSync(projDir)) {
+          if (!f.startsWith('local_') || !f.endsWith('.json')) continue;
+          try {
+            const j = JSON.parse(fs.readFileSync(path.join(projDir, f), 'utf8'));
+            if (j.cliSessionId === cliSessionId) {
+              return (Array.isArray(j.bridgeSessionIds) && j.bridgeSessionIds[0]) || null;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 function focusSession(sessionId) {
   const entry = roster.get(sessionId);
   const appName = (entry && entry.app) || 'Terminal';
   const tty = entry && entry.tty;
+
+  if (appName === 'Claude') {
+    const bridgeId = claudeBridgeId(sessionId);
+    if (bridgeId) {
+      execFile('/usr/bin/open', [`claude://code/${bridgeId}`], (err) => {
+        log(`focus deep-link claude://code/${bridgeId} for ${sessionId}${err ? ` error: ${err.message}` : ' (fired — no-op while feature-gated)'}`);
+      });
+      // Fall through to the app-level raise: while the deep link is feature-gated
+      // it does not raise the app, and a click must always DO something visible.
+    } else {
+      log(`focus: no bridge id found for ${sessionId} — app-level raise`);
+    }
+  }
 
   if (appName === 'Terminal' && tty) {
     // try-guard each window: Terminal can have non-terminal windows (Settings,

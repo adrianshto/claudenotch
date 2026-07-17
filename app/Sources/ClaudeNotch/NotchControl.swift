@@ -19,8 +19,14 @@ enum NotchControl {
 
     /// Actually stop both. bootout removes KeepAlive so neither respawns — a plain
     /// terminate() would just be relaunched by launchd seconds later.
+    /// Also drops the `paused` flag the notify hook honors: with the hub gone, every
+    /// Claude Code event would otherwise fall back to a terminal-notifier banner —
+    /// quitting the notch must mean silence, not a different notification channel.
     static func quit() {
-        Log.write("menu: quit (bootout both — won't respawn)")
+        Log.write("menu: quit (bootout both + pause hooks — won't respawn)")
+        let paused = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-notch/paused")
+        FileManager.default.createFile(atPath: paused.path, contents: nil)
         launchctl(["bootout", "gui/\(uid)/\(hubLabel)"], wait: true)
         launchctl(["bootout", "gui/\(uid)/\(appLabel)"], wait: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { NSApp.terminate(nil) }
