@@ -4,10 +4,23 @@ import DynamicNotchKit
 
 /// Shows a transient notch notification (title + message + SF Symbol), plays a
 /// sound, auto-dismisses, and runs `onTap` if the user clicks the notch item.
+///
+/// Concurrency design (the stuck-ping bug, round two): every notch mutation
+/// (hide-previous, expand, hide-self) runs on a single serialized pipeline —
+/// each new operation awaits the previous task's completion before touching
+/// any DynamicNotch. A generation counter decides ownership: a task whose
+/// generation is stale NEVER expands and NEVER hides — its successor, which
+/// bumped the generation, is responsible for hiding whatever is on screen
+/// (`current`). The old design cancelled the predecessor task mid-await, but
+/// cancellation is cooperative: the cancelled task still went on to expand its
+/// notch AFTER the successor had already tried to hide it → orphaned popup
+/// stuck on screen forever, unreachable by dismiss().
 @MainActor
 final class NotchNotifier {
-    private var notch: DynamicNotch<NotchContent, EmptyView, EmptyView>?
-    private var dismissTask: Task<Void, Never>?
+    private var current: DynamicNotch<NotchContent, EmptyView, EmptyView>?
+    private var pipeline: Task<Void, Never> = Task {}
+    private var sleeper: Task<Void, Never>?
+    private var generation = 0
 
     func notify(
         title: String,
@@ -19,6 +32,9 @@ final class NotchNotifier {
     ) {
         NSSound(named: sound)?.play()
 
+        generation += 1
+        let gen = generation
+
         // DynamicNotchKit has no built-in tap API — the tap handler lives inside
         // the SwiftUI content (clicks land because the panel is borderless).
         let content = NotchContent(title: title, message: message, systemImage: systemImage) { [weak self] in
@@ -29,20 +45,24 @@ final class NotchNotifier {
         // .auto -> real notch on notched Macs, floating panel otherwise.
         let newNotch = DynamicNotch(style: .auto) { content }
 
-        // Cancel the previous ping's auto-hide and remember its notch so we can
-        // tear it down before showing this one. (The old bug: a ping arriving while
-        // another was on screen overwrote `self.notch`, orphaning the previous notch
-        // with nothing left to hide it — so it stuck on screen forever.)
-        dismissTask?.cancel()
-        let previous = notch
-        notch = newNotch
+        // Wake the currently-sleeping task (if any) so the pipeline drains fast —
+        // its stale generation makes it a no-op, and we take over hiding `current`.
+        sleeper?.cancel()
 
-        // One task owns this notch end-to-end: hide any previous one, expand this
-        // one, wait, then hide THIS one (captured locally, so a newer ping replacing
-        // `self.notch` can't leave this notch stranded).
-        dismissTask = Task { [weak self] in
-            await previous?.hide()
+        let previousPipeline = pipeline
+        let task = Task { [weak self] in
+            await previousPipeline.value
+            guard let self else { return }
+            await self.current?.hide()
+            // Superseded while hiding the old one? Then a newer ping owns the
+            // screen — showing now would orphan this notch the same old way.
+            guard self.generation == gen else {
+                Log.write("notch ping superseded before show: \(title)")
+                return
+            }
+            self.current = newNotch
             await newNotch.expand()
+            Log.write("notch shown: \(title)")
             // Don't let the notch panel become the key window — otherwise showing it
             // steals the text cursor from whatever app/window you're typing in. Clicks
             // still work (the tap view accepts first mouse without needing key focus).
@@ -50,16 +70,26 @@ final class NotchNotifier {
                 panel.becomesKeyOnlyIfNeeded = true
             }
             try? await Task.sleep(for: .seconds(seconds))
-            guard !Task.isCancelled else { return }
+            // Superseded (or tapped) during the wait: the successor hides us.
+            guard self.generation == gen else { return }
             await newNotch.hide()
-            if self?.notch === newNotch { self?.notch = nil }
+            Log.write("notch hidden after \(Int(seconds))s: \(title)")
+            if self.current === newNotch { self.current = nil }
         }
+        pipeline = task
+        sleeper = task
     }
 
     func dismiss() {
-        dismissTask?.cancel()
-        let current = notch
-        notch = nil
-        Task { await current?.hide() }
+        generation += 1   // supersede any in-flight show/sleep — we own the hide now
+        sleeper?.cancel()
+        let previousPipeline = pipeline
+        pipeline = Task { [weak self] in
+            await previousPipeline.value
+            guard let self else { return }
+            await self.current?.hide()
+            Log.write("notch dismissed by tap")
+            self.current = nil
+        }
     }
 }
