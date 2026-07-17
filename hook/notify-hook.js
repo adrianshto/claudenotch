@@ -16,8 +16,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const NOTCH_DIR = path.join(os.homedir(), '.claude-notch');
 const HUB_PORT = 39247;
-const LOG = path.join(os.homedir(), '.claude-notch', 'events.log');
+const LOG = path.join(NOTCH_DIR, 'events.log');
+const PAUSED_FLAG = path.join(NOTCH_DIR, 'paused');       // `claudenotch stop` = truly silent
+const BANNER_STATE = path.join(NOTCH_DIR, '.banner-times.json');
+const BANNER_COOLDOWN_MS = 60_000;   // max one fallback banner per (event,label) per minute
 const TERMINAL_NOTIFIER = '/opt/homebrew/bin/terminal-notifier';
 
 function log(line) {
@@ -84,6 +88,26 @@ function controllingTty() {
   return null;
 }
 
+// --- headless detection: is the owning claude process a `claude -p/--print` one-shot? ---
+// Walk the ancestor chain to the first process whose argv is the `claude` CLI itself
+// (not merely a path containing "claude"), then check for print/one-shot flags.
+// Bot traffic (launchd agents, scripted loops) runs headless; humans don't.
+function headlessClaude() {
+  try {
+    let pid = process.ppid;
+    for (let i = 0; i < 8 && pid && pid > 1; i++) {
+      const out = execFileSync('/bin/ps', ['-o', 'ppid=,args=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      if (!out) break;
+      const sp = out.indexOf(' ');
+      const ppid = parseInt(out.slice(0, sp), 10);
+      const args = out.slice(sp + 1).trim();
+      if (/(^|[/\s])claude(\s|$)/.test(args)) return /\s(-p|--print)(\s|$)/.test(args);
+      pid = ppid;
+    }
+  } catch (_) {}
+  return false;
+}
+
 // --- fallback banner when the hub isn't answering ---
 function notify(title, subtitle, message) {
   if (fs.existsSync(TERMINAL_NOTIFIER)) {
@@ -96,9 +120,26 @@ function notify(title, subtitle, message) {
   execFile('/usr/bin/osascript', ['-e', script], () => {});
 }
 
+// Per-(event,label) cooldown so a hub outage doesn't turn event storms into banner
+// storms — the exact failure the notch was built to avoid. State survives across
+// hook invocations via a tiny json file (best-effort; a lost race just means one
+// extra banner).
+function bannerAllowed(key) {
+  let m = {};
+  try { m = JSON.parse(fs.readFileSync(BANNER_STATE, 'utf8')) || {}; } catch (_) {}
+  const now = Date.now();
+  if (now - (m[key] || 0) < BANNER_COOLDOWN_MS) return false;
+  m[key] = now;
+  for (const k of Object.keys(m)) if (now - m[k] > 3_600_000) delete m[k];
+  try { fs.writeFileSync(BANNER_STATE, JSON.stringify(m)); } catch (_) {}
+  return true;
+}
+
 function fallbackBanner(hookEvent, label, message) {
+  if (hookEvent !== 'Stop' && hookEvent !== 'Notification') return;
+  if (!bannerAllowed(`${hookEvent}|${label}`)) { log(`banner cooldown — skipped ${hookEvent} "${label}"`); return; }
   if (hookEvent === 'Stop') notify('Claude Notch', '✅ finished', label);
-  else if (hookEvent === 'Notification') notify('Claude Notch', '🔔 needs you', `${label} — ${message || 'needs your input'}`);
+  else notify('Claude Notch', '🔔 needs you', `${label} — ${message || 'needs your input'}`);
 }
 
 let raw = '';
@@ -108,6 +149,10 @@ process.stdin.on('end', () => {
   let p = {};
   try { p = JSON.parse(raw || '{}'); } catch (_) {}
 
+  // `claudenotch stop` touches this flag: the whole tool is OFF — no hub post, no
+  // fallback banner, no log spam. `claudenotch start` removes it.
+  if (fs.existsSync(PAUSED_FLAG)) { process.exit(0); }
+
   const hookEvent = p.hook_event_name || 'unknown';
   const cwd = p.cwd || process.cwd();
   const project = path.basename(cwd) || 'agent';
@@ -116,14 +161,17 @@ process.stdin.on('end', () => {
   const label = title ? `${project} · ${title}` : project;
   const app = hostApp();
   const tty = controllingTty();
+  const headless = headlessClaude();
 
-  log(`event=${hookEvent} app=${app} tty=${tty || '-'} label="${label}" session=${sessionId.slice(0, 8)}`);
+  log(`event=${hookEvent} app=${app} tty=${tty || '-'} headless=${headless} label="${label}" session=${sessionId.slice(0, 8)}`);
 
   const payload = JSON.stringify({
     hookEvent, cwd, sessionId,
-    title: title || project,
+    // Real ai-title or null — the hub falls back to the folder name for display,
+    // but needs to KNOW it's untitled (untitled + short-lived = bot, no ping).
+    title: title || null,
     message: p.message || '',
-    app, tty,
+    app, tty, headless,
   });
 
   // POST to the hub. On any connection failure, fall back to a banner.
@@ -134,6 +182,7 @@ process.stdin.on('end', () => {
     (res) => { res.resume(); res.on('end', () => process.exit(0)); }
   );
   req.on('error', () => {
+    if (headless) { process.exit(0); }   // bot traffic never banners
     log(`hub unreachable — fallback banner for ${hookEvent}`);
     fallbackBanner(hookEvent, label, p.message);
     setTimeout(() => process.exit(0), 1500);

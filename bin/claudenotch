@@ -56,7 +56,10 @@ stop() {
   for p in $(hub_pids) $(app_pids); do kill "$p" 2>/dev/null && killed=$((killed + 1)); done
   sleep 0.4
   for p in $(hub_pids) $(app_pids); do kill -9 "$p" 2>/dev/null || true; done   # force survivors
-  echo "    ${c_grn}stopped${c_reset} (swept ${killed} process(es))"
+  # Pause the hooks too: without this, every Claude Code event still fires a
+  # terminal-notifier fallback banner ("hub unreachable") — stopped must mean SILENT.
+  touch "$NOTCH_DIR/paused"
+  echo "    ${c_grn}stopped${c_reset} (swept ${killed} process(es)) — notifications paused"
 }
 
 start() {
@@ -66,6 +69,7 @@ start() {
     [ -f "$LA/$L.plist" ] || { echo "    ${c_red}✗ missing $LA/$L.plist${c_reset} — run install-standalone.sh"; missing=1; }
   done
   [ "$missing" = 1 ] && return 1
+  rm -f "$NOTCH_DIR/paused"   # resume hook notifications
   bootstrap "$HUB_LABEL"
   bootstrap "$APP_LABEL"
   # Brief readiness wait (up to ~2s) so the status below reflects the real state.
@@ -100,6 +104,7 @@ status() {
   loaded "$HUB_LABEL" && l1="loaded" || l1="NOT loaded"
   loaded "$APP_LABEL" && l2="loaded" || l2="NOT loaded"
   echo "  ${c_dim}launch agents: hub $l1 · app $l2${c_reset}"
+  [ -f "$NOTCH_DIR/paused" ] && echo "  ${c_yel}⏸ paused — hooks silent ('claudenotch start' to resume)${c_reset}"
 
   [ "$hp" -gt 1 ] && echo "  ${c_yel}⚠ $hp hub processes (expected 1) — run 'claudenotch restart'${c_reset}"
   [ "$ap" -gt 1 ] && echo "  ${c_yel}⚠ $ap app processes (expected 1) — run 'claudenotch restart'${c_reset}"

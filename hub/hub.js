@@ -35,6 +35,15 @@ const STALE_EXPIRE_MS = 12 * 60 * 60_000;   // 12h catch-all for ANY state — c
                                             // orphaned running/needsYou entries whose
                                             // session crashed/closed without SessionEnd.
 const PRUNE_EVERY_MS  = 60_000;             // sweep cadence
+// Ping-noise controls (2026-07-17): background automations (launchd bots, headless
+// `claude -p` loops) fire REAL Stop events every few seconds — 1000+ "finished"
+// pings in a night, none of them human-relevant. Three filters:
+//   • headless sessions (claude -p / --print, flagged by the hook) never roster or ping.
+//   • an untitled session that lived < UNTITLED_MIN_LIFE_MS gets no done-ping —
+//     one-shot automation; interactive chats either get an ai-title or live longer.
+//   • per-project cooldown: at most one ping per (project, kind) per PING_COOLDOWN_MS.
+const UNTITLED_MIN_LIFE_MS = 45_000;
+const PING_COOLDOWN_MS     = 60_000;
 
 function log(line) {
   try { fs.appendFileSync(LOG, `${new Date().toISOString()}  ${line}\n`); } catch (_) {}
@@ -44,6 +53,7 @@ function log(line) {
 const roster = new Map();
 const pingQueue = [];          // [{name,event,message,sessionId,window,focused,ts}]
 let waiters = [];              // pending GET /pings responses
+const lastPingAt = new Map();  // `${window}|${pingEvent}` -> ts (per-project cooldown)
 
 function flushWaiters() {
   if (!pingQueue.length || !waiters.length) return;
@@ -65,6 +75,10 @@ function applyEvent(p) {
   const sessionId = p.sessionId || '';
   if (!sessionId) return;
 
+  // Bot traffic: headless one-shots (claude -p) never roster and never ping —
+  // they'd churn the dashboard with 10-second "running" flashes and ping storms.
+  if (p.headless) { log(`${hookEvent} ${sessionId} headless — ignored`); return; }
+
   const cwd = p.cwd || '';
   const folderName = path.basename(cwd) || 'agent';
   const name = (p.title && p.title.trim()) ? p.title.trim() : folderName;
@@ -72,6 +86,8 @@ function applyEvent(p) {
 
   const prev = roster.get(sessionId);
   const prevState = prev ? prev.state : null;
+  const titled = !!(p.title && String(p.title).trim());
+  const startedAt = (prev && prev.startedAt) || Date.now();
 
   if (hookEvent === 'SessionEnd') {
     roster.delete(sessionId);
@@ -92,9 +108,11 @@ function applyEvent(p) {
       pingEvent = 'done';
       break;
     case 'Notification':
-      // Idle-nudge suppression: a Notification while already done is Claude Code's
-      // repeated "waiting for you" nudge → stay done, no ping.
+      // Idle-nudge suppression: Claude Code RE-FIRES "waiting for you" nudges while
+      // a session sits done — or still needsYou. Either way you were already told;
+      // only the transition INTO needsYou pings.
       if (prevState === 'done') { state = 'done'; queuePing = false; }
+      else if (prevState === 'needsYou') { state = 'needsYou'; queuePing = false; }
       else { state = 'needsYou'; queuePing = true; pingEvent = 'needs_attention'; }
       break;
     default:
@@ -115,12 +133,27 @@ function applyEvent(p) {
     window: folderName, folder: cwd, app: appName,
     tty: p.tty || (prev && prev.tty) || null,
     ts: Date.now(),   // last-event time — drives idle/stale expiry
+    startedAt,        // first-seen time — untitled short-lived = bot-like, no ping
     doneAt,
   };
   if (state !== 'done') delete entry.doneAt;
   roster.set(sessionId, entry);
 
-  log(`${hookEvent} ${sessionId} state=${state} name="${name}" app=${appName} ping=${queuePing}`);
+  // Ping-noise filters — see UNTITLED_MIN_LIFE_MS / PING_COOLDOWN_MS notes above.
+  let suppressed = null;
+  if (queuePing) {
+    const key = `${folderName}|${pingEvent}`;
+    if (pingEvent === 'done' && !titled && Date.now() - startedAt < UNTITLED_MIN_LIFE_MS) {
+      suppressed = 'untitled short-lived (bot-like)';
+    } else if (Date.now() - (lastPingAt.get(key) || 0) < PING_COOLDOWN_MS) {
+      suppressed = `cooldown ${key}`;
+    } else {
+      lastPingAt.set(key, Date.now());
+    }
+    if (suppressed) queuePing = false;
+  }
+
+  log(`${hookEvent} ${sessionId} state=${state} name="${name}" app=${appName} ping=${queuePing}${suppressed ? ` (suppressed: ${suppressed})` : ''}`);
 
   if (queuePing) {
     pingQueue.push({
