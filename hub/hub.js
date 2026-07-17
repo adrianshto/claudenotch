@@ -227,22 +227,15 @@ function focusSession(sessionId) {
   const appName = (entry && entry.app) || 'Terminal';
   const tty = entry && entry.tty;
 
-  if (appName === 'Claude') {
-    // No app-level raise here, ON PURPOSE: without the (feature-gated) deep link we
-    // cannot land on the actual chat, and yanking the user to the Claude app's most
-    // recent random chat is worse than doing nothing — explicit user feedback
-    // 2026-07-17. The deep link still fires so click→exact-chat starts working the
-    // moment Anthropic enables the flag; until then a Claude-chat click is a no-op.
-    const bridgeId = claudeBridgeId(sessionId);
-    if (bridgeId) {
-      execFile('/usr/bin/open', [`claude://code/${bridgeId}`], (err) => {
-        log(`focus deep-link claude://code/${bridgeId} for ${sessionId}${err ? ` error: ${err.message}` : ' (fired — no-op while feature-gated)'}`);
-      });
-    } else {
-      log(`focus: no bridge id for ${sessionId} — doing nothing (no app raise for Claude chats)`);
-    }
-    return;
-  }
+  // Claude desktop: CLICK = go there (app raise via the fallback below), LOOK =
+  // nothing. Deliberately NO deep-link fire here even though claudeBridgeId() can
+  // resolve one: the app SELF-ACTIVATES on any claude:// delivery (verified
+  // 2026-07-17 — even `open -g` yanks focus, the Electron handler calls focus()
+  // itself) and while the deep link is feature-gated it never navigates, so firing
+  // it is all cost, no benefit. When Anthropic un-gates `claude://code/<bridgeId>`
+  // (main.log stops saying "code session deep link gated off"), restore:
+  //   const bridgeId = claudeBridgeId(sessionId);
+  //   if (bridgeId) { execFile('/usr/bin/open', [`claude://code/${bridgeId}`]); return; }
 
   if (appName === 'Terminal' && tty) {
     // try-guard each window: Terminal can have non-terminal windows (Settings,
