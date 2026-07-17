@@ -41,9 +41,14 @@ const PRUNE_EVERY_MS  = 60_000;             // sweep cadence
 //   • headless sessions (claude -p / --print, flagged by the hook) never roster or ping.
 //   • an untitled session that lived < UNTITLED_MIN_LIFE_MS gets no done-ping —
 //     one-shot automation; interactive chats either get an ai-title or live longer.
-//   • per-project cooldown: at most one ping per (project, kind) per PING_COOLDOWN_MS.
+//   • per-CHAT cooldown: the same session re-finishing within PING_COOLDOWN_MS stays
+//     quiet (turn-by-turn Stop spam), but two DIFFERENT chats both ping — a project
+//     is not a chat, and parallel chats finishing close together are all news.
+//   • global flood gate: > FLOOD_MAX pings in any rolling minute = a storm no matter
+//     how it's keyed → suppress the overflow.
 const UNTITLED_MIN_LIFE_MS = 45_000;
 const PING_COOLDOWN_MS     = 60_000;
+const FLOOD_MAX_PER_MIN    = 8;
 
 function log(line) {
   try { fs.appendFileSync(LOG, `${new Date().toISOString()}  ${line}\n`); } catch (_) {}
@@ -53,7 +58,8 @@ function log(line) {
 const roster = new Map();
 const pingQueue = [];          // [{name,event,message,sessionId,window,focused,ts}]
 let waiters = [];              // pending GET /pings responses
-const lastPingAt = new Map();  // `${window}|${pingEvent}` -> ts (per-project cooldown)
+const lastPingAt = new Map();  // `${sessionId}|${pingEvent}` -> ts (per-chat cooldown)
+let recentPings = [];          // ts of pings that fired (global flood gate)
 
 function flushWaiters() {
   if (!pingQueue.length || !waiters.length) return;
@@ -142,13 +148,18 @@ function applyEvent(p) {
   // Ping-noise filters — see UNTITLED_MIN_LIFE_MS / PING_COOLDOWN_MS notes above.
   let suppressed = null;
   if (queuePing) {
-    const key = `${folderName}|${pingEvent}`;
-    if (pingEvent === 'done' && !titled && Date.now() - startedAt < UNTITLED_MIN_LIFE_MS) {
+    const now = Date.now();
+    const key = `${sessionId}|${pingEvent}`;
+    recentPings = recentPings.filter((t) => now - t < 60_000);
+    if (pingEvent === 'done' && !titled && now - startedAt < UNTITLED_MIN_LIFE_MS) {
       suppressed = 'untitled short-lived (bot-like)';
-    } else if (Date.now() - (lastPingAt.get(key) || 0) < PING_COOLDOWN_MS) {
-      suppressed = `cooldown ${key}`;
+    } else if (now - (lastPingAt.get(key) || 0) < PING_COOLDOWN_MS) {
+      suppressed = `cooldown same chat (${pingEvent})`;
+    } else if (recentPings.length >= FLOOD_MAX_PER_MIN) {
+      suppressed = `flood gate (${FLOOD_MAX_PER_MIN}/min)`;
     } else {
-      lastPingAt.set(key, Date.now());
+      lastPingAt.set(key, now);
+      recentPings.push(now);
     }
     if (suppressed) queuePing = false;
   }
@@ -217,16 +228,20 @@ function focusSession(sessionId) {
   const tty = entry && entry.tty;
 
   if (appName === 'Claude') {
+    // No app-level raise here, ON PURPOSE: without the (feature-gated) deep link we
+    // cannot land on the actual chat, and yanking the user to the Claude app's most
+    // recent random chat is worse than doing nothing — explicit user feedback
+    // 2026-07-17. The deep link still fires so click→exact-chat starts working the
+    // moment Anthropic enables the flag; until then a Claude-chat click is a no-op.
     const bridgeId = claudeBridgeId(sessionId);
     if (bridgeId) {
       execFile('/usr/bin/open', [`claude://code/${bridgeId}`], (err) => {
         log(`focus deep-link claude://code/${bridgeId} for ${sessionId}${err ? ` error: ${err.message}` : ' (fired — no-op while feature-gated)'}`);
       });
-      // Fall through to the app-level raise: while the deep link is feature-gated
-      // it does not raise the app, and a click must always DO something visible.
     } else {
-      log(`focus: no bridge id found for ${sessionId} — app-level raise`);
+      log(`focus: no bridge id for ${sessionId} — doing nothing (no app raise for Claude chats)`);
     }
+    return;
   }
 
   if (appName === 'Terminal' && tty) {
@@ -296,6 +311,8 @@ function prune() {
     if (idleStale || doneStale || stale) { roster.delete(id); removed++; }
   }
   if (removed) log(`prune removed ${removed} stale (idle>${IDLE_EXPIRE_MS / 60000}m, done>${DONE_EXPIRE_MS / 60000}m, any>${STALE_EXPIRE_MS / 3600000}h) → ${roster.size} left`);
+  // Per-chat cooldown entries are useless once older than the cooldown window.
+  for (const [k, t] of lastPingAt) if (now - t > PING_COOLDOWN_MS) lastPingAt.delete(k);
 }
 
 // Drop finished/idle sessions on demand (the dashboard's "Clear finished" button
