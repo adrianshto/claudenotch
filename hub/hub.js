@@ -41,14 +41,13 @@ const PRUNE_EVERY_MS  = 60_000;             // sweep cadence
 //   • headless sessions (claude -p / --print, flagged by the hook) never roster or ping.
 //   • an untitled session that lived < UNTITLED_MIN_LIFE_MS gets no done-ping —
 //     one-shot automation; interactive chats either get an ai-title or live longer.
-//   • per-CHAT cooldown: the same session re-finishing within PING_COOLDOWN_MS stays
-//     quiet (turn-by-turn Stop spam), but two DIFFERENT chats both ping — a project
-//     is not a chat, and parallel chats finishing close together are all news.
 //   • global flood gate: > FLOOD_MAX pings in any rolling minute = a storm no matter
-//     how it's keyed → suppress the overflow.
+//     what it is → suppress the overflow.
+// NO per-chat/per-project cooldown (removed 2026-07-17 after trying both): real
+// chats ping on every turn-end, exactly like the original behavior the user liked.
 const UNTITLED_MIN_LIFE_MS = 45_000;
-const PING_COOLDOWN_MS     = 60_000;
 const FLOOD_MAX_PER_MIN    = 8;
+const ROSTER_FILE = path.join(os.homedir(), '.claude-notch', 'roster.json');
 
 function log(line) {
   try { fs.appendFileSync(LOG, `${new Date().toISOString()}  ${line}\n`); } catch (_) {}
@@ -58,8 +57,29 @@ function log(line) {
 const roster = new Map();
 const pingQueue = [];          // [{name,event,message,sessionId,window,focused,ts}]
 let waiters = [];              // pending GET /pings responses
-const lastPingAt = new Map();  // `${sessionId}|${pingEvent}` -> ts (per-chat cooldown)
 let recentPings = [];          // ts of pings that fired (global flood gate)
+
+// Persist the roster across hub restarts. Without this every kickstart/rebuild
+// wiped it: the dashboard went blank AND startedAt reset for live sessions, so
+// the untitled<45s bot filter wrongly ate the next real "finished" ping.
+let saveTimer = null;
+function saveRoster() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try { fs.writeFileSync(ROSTER_FILE, JSON.stringify([...roster.values()])); } catch (_) {}
+  }, 1000);
+}
+function loadRoster() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(ROSTER_FILE, 'utf8'));
+    const now = Date.now();
+    for (const e of arr) {
+      if (e && e.sessionId && now - (e.ts || 0) < STALE_EXPIRE_MS) roster.set(e.sessionId, e);
+    }
+    if (roster.size) log(`restored ${roster.size} roster entr${roster.size === 1 ? 'y' : 'ies'} from disk`);
+  } catch (_) {}
+}
 
 function flushWaiters() {
   if (!pingQueue.length || !waiters.length) return;
@@ -97,6 +117,7 @@ function applyEvent(p) {
 
   if (hookEvent === 'SessionEnd') {
     roster.delete(sessionId);
+    saveRoster();
     log(`SessionEnd ${sessionId} removed`);
     return;
   }
@@ -144,21 +165,18 @@ function applyEvent(p) {
   };
   if (state !== 'done') delete entry.doneAt;
   roster.set(sessionId, entry);
+  saveRoster();
 
   // Ping-noise filters — see UNTITLED_MIN_LIFE_MS / PING_COOLDOWN_MS notes above.
   let suppressed = null;
   if (queuePing) {
     const now = Date.now();
-    const key = `${sessionId}|${pingEvent}`;
     recentPings = recentPings.filter((t) => now - t < 60_000);
     if (pingEvent === 'done' && !titled && now - startedAt < UNTITLED_MIN_LIFE_MS) {
       suppressed = 'untitled short-lived (bot-like)';
-    } else if (now - (lastPingAt.get(key) || 0) < PING_COOLDOWN_MS) {
-      suppressed = `cooldown same chat (${pingEvent})`;
     } else if (recentPings.length >= FLOOD_MAX_PER_MIN) {
       suppressed = `flood gate (${FLOOD_MAX_PER_MIN}/min)`;
     } else {
-      lastPingAt.set(key, now);
       recentPings.push(now);
     }
     if (suppressed) queuePing = false;
@@ -303,9 +321,10 @@ function prune() {
     const stale      = now - (e.ts || 0) > STALE_EXPIRE_MS;
     if (idleStale || doneStale || stale) { roster.delete(id); removed++; }
   }
-  if (removed) log(`prune removed ${removed} stale (idle>${IDLE_EXPIRE_MS / 60000}m, done>${DONE_EXPIRE_MS / 60000}m, any>${STALE_EXPIRE_MS / 3600000}h) → ${roster.size} left`);
-  // Per-chat cooldown entries are useless once older than the cooldown window.
-  for (const [k, t] of lastPingAt) if (now - t > PING_COOLDOWN_MS) lastPingAt.delete(k);
+  if (removed) {
+    saveRoster();
+    log(`prune removed ${removed} stale (idle>${IDLE_EXPIRE_MS / 60000}m, done>${DONE_EXPIRE_MS / 60000}m, any>${STALE_EXPIRE_MS / 3600000}h) → ${roster.size} left`);
+  }
 }
 
 // Drop finished/idle sessions on demand (the dashboard's "Clear finished" button
@@ -315,6 +334,7 @@ function clearInactive(all) {
   for (const [id, e] of roster) {
     if (all || e.state === 'done' || e.state === 'idle') { roster.delete(id); removed++; }
   }
+  saveRoster();
   log(`clear removed ${removed} (all=${!!all}) → ${roster.size} left`);
   return removed;
 }
@@ -395,6 +415,7 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+loadRoster();
 server.listen(PORT, HOST, () => log(`hub listening ${HOST}:${PORT} (DONE_PURPLE_MS=${DONE_PURPLE_MS}, idle_expire=${IDLE_EXPIRE_MS / 60000}m, done_expire=${DONE_EXPIRE_MS / 60000}m)`));
 
 // Periodic sweep of stale entries (idle/done). unref() so it never holds the

@@ -28,7 +28,13 @@ function log(line) {
   try { fs.appendFileSync(LOG, `${new Date().toISOString()}  ${line}\n`); } catch (_) {}
 }
 
-// --- chat title: last `ai-title` line Claude Code writes into the transcript ---
+// --- chat title, two sources ---
+// 1. Terminal CLI chats: the last `ai-title` line in the transcript (classic).
+// 2. Claude desktop chats: the app stopped writing ai-title into transcripts
+//    (~2026-07-13) — its auto-title lives ONLY in the app's own session store,
+//    claude-code-sessions/<org>/<proj>/local_*.json ({cliSessionId, title}).
+//    Scan newest-first and stop at the first match: the active chat's file was
+//    just touched, so this is typically a handful of reads, not all ~240.
 function chatTitle(transcriptPath) {
   try {
     if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
@@ -43,6 +49,37 @@ function chatTitle(transcriptPath) {
     }
     return title;
   } catch (_) { return null; }
+}
+
+function desktopTitle(cliSessionId) {
+  if (!cliSessionId) return null;
+  try {
+    const root = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions');
+    const files = [];
+    for (const org of fs.readdirSync(root)) {
+      const orgDir = path.join(root, org);
+      let projs; try { projs = fs.readdirSync(orgDir); } catch (_) { continue; }
+      for (const proj of projs) {
+        const projDir = path.join(orgDir, proj);
+        let names; try { names = fs.readdirSync(projDir); } catch (_) { continue; }
+        for (const f of names) {
+          if (!f.startsWith('local_') || !f.endsWith('.json')) continue;
+          const full = path.join(projDir, f);
+          try { files.push({ full, mtime: fs.statSync(full).mtimeMs }); } catch (_) {}
+        }
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    for (const { full } of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(full, 'utf8'));
+        if (j.cliSessionId === cliSessionId) {
+          return (j.title && String(j.title).trim()) ? String(j.title).trim() : null;
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
 }
 
 // --- host app: walk the process-ancestor chain, identify what's hosting `claude` ---
@@ -157,7 +194,7 @@ process.stdin.on('end', () => {
   const cwd = p.cwd || process.cwd();
   const project = path.basename(cwd) || 'agent';
   const sessionId = p.session_id || '';
-  const title = chatTitle(p.transcript_path);
+  const title = chatTitle(p.transcript_path) || desktopTitle(sessionId);
   const label = title ? `${project} · ${title}` : project;
   const app = hostApp();
   const tty = controllingTty();
