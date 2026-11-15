@@ -159,6 +159,8 @@ function applyEvent(p) {
     sessionId, name, state,
     window: folderName, folder: cwd, app: appName,
     tty: p.tty || (prev && prev.tty) || null,
+    // Claude desktop chat id (`local_…`, resolved by the hook) → click opens that chat.
+    localSessionId: p.localSessionId || (prev && prev.localSessionId) || null,
     ts: Date.now(),   // last-event time — drives idle/stale expiry
     startedAt,        // first-seen time — untitled short-lived = bot-like, no ping
     doneAt,
@@ -199,9 +201,9 @@ function applyEvent(p) {
 }
 
 // Focus the chat. For Terminal/iTerm we know the session's TTY, so we can select
-// the EXACT window + tab via AppleScript (real "click → land on the chat"). For
-// anything else (e.g. the Claude desktop app, which has no per-chat focus API we
-// can drive), we fall back to just activating the app.
+// the EXACT window + tab via AppleScript (real "click → land on the chat"). For the
+// Claude desktop app we open its per-chat deep link. Anything else falls back to
+// just activating the app.
 function runOsa(script, tag, sessionId) {
   execFile('/usr/bin/osascript', ['-e', script], (err) => {
     if (err) log(`focus ${tag} error for ${sessionId}: ${err.message}`);
@@ -209,51 +211,27 @@ function runOsa(script, tag, sessionId) {
   });
 }
 
-// Claude desktop deep link: the app maps our CLI session id to an internal
-// local_* session whose json (claude-code-sessions/<org>/<proj>/local_*.json)
-// carries bridgeSessionIds — and `claude://code/<bridgeId>` is the app's own
-// jump-to-chat URL. As of 2026-07-17 the handler logs "code session deep link
-// gated off" (remote feature flag) and does NOT navigate — but the URL passes
-// validation, so we fire it anyway ahead of the app-level raise: the day the
-// flag flips, clicks start landing on the exact chat with no code change here.
-function claudeBridgeId(cliSessionId) {
-  try {
-    const root = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions');
-    for (const org of fs.readdirSync(root)) {
-      const orgDir = path.join(root, org);
-      if (!fs.statSync(orgDir).isDirectory()) continue;
-      for (const proj of fs.readdirSync(orgDir)) {
-        const projDir = path.join(orgDir, proj);
-        if (!fs.statSync(projDir).isDirectory()) continue;
-        for (const f of fs.readdirSync(projDir)) {
-          if (!f.startsWith('local_') || !f.endsWith('.json')) continue;
-          try {
-            const j = JSON.parse(fs.readFileSync(path.join(projDir, f), 'utf8'));
-            if (j.cliSessionId === cliSessionId) {
-              return (Array.isArray(j.bridgeSessionIds) && j.bridgeSessionIds[0]) || null;
-            }
-          } catch (_) {}
-        }
-      }
-    }
-  } catch (_) {}
-  return null;
-}
-
 function focusSession(sessionId) {
   const entry = roster.get(sessionId);
   const appName = (entry && entry.app) || 'Terminal';
   const tty = entry && entry.tty;
+  const localId = entry && entry.localSessionId;
 
-  // Claude desktop: CLICK = go there (app raise via the fallback below), LOOK =
-  // nothing. Deliberately NO deep-link fire here even though claudeBridgeId() can
-  // resolve one: the app SELF-ACTIVATES on any claude:// delivery (verified
-  // 2026-07-17 — even `open -g` yanks focus, the Electron handler calls focus()
-  // itself) and while the deep link is feature-gated it never navigates, so firing
-  // it is all cost, no benefit. When Anthropic un-gates `claude://code/<bridgeId>`
-  // (main.log stops saying "code session deep link gated off"), restore:
-  //   const bridgeId = claudeBridgeId(sessionId);
-  //   if (bridgeId) { execFile('/usr/bin/open', [`claude://code/${bridgeId}`]); return; }
+  // Claude desktop: open the EXACT chat. `claude://code/continue?session=<local_…>`
+  // is the app's own "continue this Code session" entry point — it raises the
+  // window and navigates to that chat (verified 2026-11-16 on Claude 5.11492.5:
+  // main.log shows LocalSessions.setFocusedSession → that id). The older
+  // `claude://code/<bridge session_…>` form is silently dropped, so don't use it.
+  // localId comes from the hook (desktopSession()); if it's missing we fall
+  // through to the plain app raise below.
+  if (appName === 'Claude' && localId && /^local_[A-Za-z0-9-]+$/.test(localId)) {
+    const link = `claude://code/continue?session=${localId}`;
+    execFile('/usr/bin/open', [link], (err) => {
+      if (err) log(`focus claude-chat error for ${sessionId}: ${err.message}`);
+      else log(`focus claude-chat → ${localId} (${sessionId})`);
+    });
+    return;
+  }
 
   if (appName === 'Terminal' && tty) {
     // try-guard each window: Terminal can have non-terminal windows (Settings,

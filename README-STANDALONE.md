@@ -33,14 +33,16 @@ Claude hook ──POST /event──▶  Hub daemon (127.0.0.1:39247)   [LaunchAg
 |---|---|
 | **Terminal.app** | Selects the **exact window + tab** (matched by TTY via AppleScript) ✅ |
 | **iTerm2** | Same — exact tab ✅ |
-| **Claude desktop app** | Raises the app only ⚠️ — see below |
+| **Claude desktop app** | Opens the **exact chat** ✅ — see below |
 
-**Why the Claude desktop app can't jump to the specific chat (yet):** the app *has* a
-`claude://code/<bridge-id>` deep link that navigates to a chat, but (a) it needs a "bridge
-session id" (`session_…`/`cse_…`) that the Claude Code hook never sees — the hook only has
-the CLI session id — and (b) it's behind a server-side feature flag (`2143883161`) that is
-currently **gated off**. If/when Anthropic enables that flag, wiring it up is a small change
-(map CLI id → bridge id, point the notch click at the deep link).
+**How the Claude desktop jump works (since 2026-11-16):** the hook looks up the chat's
+desktop record (`claude-code-sessions/<org>/<proj>/local_*.json`, matched on
+`cliSessionId`) and sends its `local_…` id to the hub. On click the hub opens
+`claude://code/continue?session=<local_…>`, the app's own "continue this Code session"
+entry point, which raises the window and navigates to that chat. (The older
+`claude://code/<bridge session_…>` form is silently dropped by the app, so it isn't used.)
+Rows recorded before this change pick up the id on their next event; until then a click
+just raises the app.
 
 ## Install
 

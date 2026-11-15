@@ -32,9 +32,8 @@ function log(line) {
 // 1. Terminal CLI chats: the last `ai-title` line in the transcript (classic).
 // 2. Claude desktop chats: the app stopped writing ai-title into transcripts
 //    (~2026-07-13) — its auto-title lives ONLY in the app's own session store,
-//    claude-code-sessions/<org>/<proj>/local_*.json ({cliSessionId, title}).
-//    Scan newest-first and stop at the first match: the active chat's file was
-//    just touched, so this is typically a handful of reads, not all ~240.
+//    claude-code-sessions/<org>/<proj>/local_*.json ({cliSessionId, title}) —
+//    see desktopSession() below.
 function chatTitle(transcriptPath) {
   try {
     if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
@@ -51,8 +50,20 @@ function chatTitle(transcriptPath) {
   } catch (_) { return null; }
 }
 
-function desktopTitle(cliSessionId) {
+// Finds the Claude desktop app's record for this CLI session → { title, localId }.
+// localId (`local_…`) is what `claude://code/continue?session=<localId>` takes to
+// open that exact chat — the hub uses it for click-to-chat.
+//
+// PERF (2026-11-16): these files grew to ~1 MB each (embedded MCP config) and there
+// are ~1.8k of them. Full-parsing every file on a miss took 3+ s — past this hook's
+// 4 s kill timer, so SessionStart/SessionEnd events were silently dropped. Now we
+// read only each file's first HEAD_BYTES (cliSessionId sits in the first ~100 B)
+// and full-parse just the one file that matches.
+const DESKTOP_HEAD_BYTES = 8192;
+function desktopSession(cliSessionId) {
   if (!cliSessionId) return null;
+  const needle = new RegExp(`"cliSessionId"\\s*:\\s*"${cliSessionId.replace(/[^A-Za-z0-9-]/g, '')}"`);
+  const head = Buffer.alloc(DESKTOP_HEAD_BYTES);
   try {
     const root = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude-code-sessions');
     const files = [];
@@ -69,14 +80,22 @@ function desktopTitle(cliSessionId) {
         }
       }
     }
-    files.sort((a, b) => b.mtime - a.mtime);
+    files.sort((a, b) => b.mtime - a.mtime);   // active chat's file was just touched
     for (const { full } of files) {
+      let fd;
       try {
+        fd = fs.openSync(full, 'r');
+        const n = fs.readSync(fd, head, 0, DESKTOP_HEAD_BYTES, 0);
+        if (!needle.test(head.toString('utf8', 0, n))) continue;
         const j = JSON.parse(fs.readFileSync(full, 'utf8'));
-        if (j.cliSessionId === cliSessionId) {
-          return (j.title && String(j.title).trim()) ? String(j.title).trim() : null;
-        }
-      } catch (_) {}
+        if (j.cliSessionId !== cliSessionId) continue;
+        const title = (j.title && String(j.title).trim()) ? String(j.title).trim() : null;
+        const localId = (typeof j.sessionId === 'string' && /^local_[A-Za-z0-9-]+$/.test(j.sessionId)) ? j.sessionId : null;
+        return { title, localId };
+      } catch (_) {
+      } finally {
+        if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {}
+      }
     }
   } catch (_) {}
   return null;
@@ -194,13 +213,18 @@ process.stdin.on('end', () => {
   const cwd = p.cwd || process.cwd();
   const project = path.basename(cwd) || 'agent';
   const sessionId = p.session_id || '';
-  const title = chatTitle(p.transcript_path) || desktopTitle(sessionId);
+  // SessionEnd just removes the row — no title needed, so skip the lookups and post
+  // immediately (these used to be the events most often lost to the kill timer).
+  // Desktop record first: cheap now, and desktop transcripts carry no ai-title, so
+  // reading the (often multi-MB) transcript for them was wasted work.
+  const desk = hookEvent === 'SessionEnd' ? null : desktopSession(sessionId);
+  const title = hookEvent === 'SessionEnd' ? null : ((desk && desk.title) || chatTitle(p.transcript_path));
   const label = title ? `${project} · ${title}` : project;
   const app = hostApp();
   const tty = controllingTty();
   const headless = headlessClaude();
 
-  log(`event=${hookEvent} app=${app} tty=${tty || '-'} headless=${headless} label="${label}" session=${sessionId.slice(0, 8)}`);
+  log(`event=${hookEvent} app=${app} tty=${tty || '-'} headless=${headless} label="${label}" session=${sessionId.slice(0, 8)}${desk && desk.localId ? ` local=${desk.localId.slice(0, 14)}` : ''}`);
 
   const payload = JSON.stringify({
     hookEvent, cwd, sessionId,
@@ -209,6 +233,8 @@ process.stdin.on('end', () => {
     title: title || null,
     message: p.message || '',
     app, tty, headless,
+    // Claude desktop chat id (`local_…`) → hub opens that exact chat on click.
+    localSessionId: (desk && desk.localId) || null,
   });
 
   // POST to the hub. On any connection failure, fall back to a banner.
