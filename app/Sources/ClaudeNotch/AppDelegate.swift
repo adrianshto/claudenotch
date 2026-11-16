@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let roster = RosterStore()
     private var dashboard: DashboardController!
     private var detector: HoverDetector!
+    private var sweeper: NotchWindowSweeper!
     private var detectorHovered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -51,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         detector.onExit = { [weak self] in self?.detectorHovered = false }
         detector.start()
+
+        // Close notch windows DynamicNotchKit leaves on screen after display changes
+        // (see NotchWindowSweeper) — what used to pile up into hundreds of windows.
+        sweeper = NotchWindowSweeper(surfaces: [notifier, dashboard])
+        sweeper.start()
 
         // Pull pings from the extension instead of being launched with a URL (which would
         // foreground us and steal key focus from whatever the user is typing).
