@@ -51,6 +51,18 @@ struct Agent: Identifiable, Equatable, Sendable {
     var displayColor: Color {
         doneRecently ? Color(red: 0.72, green: 0.55, blue: 1.0) : state.color
     }
+
+    /// Row priority (lower = higher up). Drives the most-urgent-first ordering so
+    /// the row cap can never bury a "needs you". Idle is last (and filtered out of
+    /// rows entirely — see `RosterStore.actionable`).
+    var sortRank: Int {
+        switch state {
+        case .needsYou: return 0
+        case .done:     return doneRecently ? 1 : 3
+        case .running:  return 2
+        case .idle:     return 4
+        }
+    }
 }
 
 /// The single source of truth the dashboard renders. Fed by the hub (hook +
@@ -63,7 +75,26 @@ final class RosterStore: ObservableObject {
     var running: Int  { agents.lazy.filter { $0.state == .running }.count }
     var done: Int     { agents.lazy.filter { $0.state == .done }.count }
     var needsYou: Int { agents.lazy.filter { $0.state == .needsYou }.count }
+    var idle: Int     { agents.lazy.filter { $0.state == .idle }.count }
     var hasAny: Bool  { !agents.isEmpty }
+
+    /// Agents that have earned a row: anything that's actually doing something
+    /// (running), finished (done), or waiting on you (needsYou). Idle
+    /// "opened-but-never-used" sessions are excluded — they only feed the idle
+    /// count chip, so a pile of stray terminals can't bury what matters. Sorted
+    /// most-urgent-first; newer finishes float above older ones.
+    var actionable: [Agent] {
+        agents
+            .filter { $0.state != .idle }
+            .sorted { a, b in
+                if a.sortRank != b.sortRank { return a.sortRank < b.sortRank }
+                // Total ordering: treat a missing doneAt as 0 (rather than skipping the
+                // comparison) so the comparator is well-defined for every pair.
+                let da = a.doneAt ?? 0, db = b.doneAt ?? 0
+                if da != db { return da > db }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+    }
 
     func apply(_ agents: [Agent]) { self.agents = agents }
 }

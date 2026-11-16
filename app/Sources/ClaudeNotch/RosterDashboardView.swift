@@ -2,38 +2,58 @@ import SwiftUI
 
 /// Expanded content for the dashboard notch. DynamicNotchKit draws the notch
 /// shell + animation around this; we just provide the agent roster.
+///
+/// Design rules (so the notch can't become an unreadable session graveyard):
+///   • Only *actionable* agents get a row — needs-you, running, just-finished.
+///     Idle "opened-but-never-used" sessions live only in the count chip.
+///   • Rows are priority-sorted (most urgent first) and capped at `maxRows`, with
+///     a "+N more" line for the overflow. The notch physically cannot outgrow the
+///     screen, no matter how many chats are open. (No scrolling — by design.)
+///   • A "Clear finished" control drops the done pile on demand.
 struct RosterDashboardView: View {
     @ObservedObject var store: RosterStore
     var onPick: (Agent) -> Void
+    var onClearFinished: () -> Void
+
+    /// Hard cap on visible rows. With idle already filtered out, ~6 actionable rows
+    /// is almost always enough; the rest collapse into the "+N more" line. Kept low so
+    /// the panel stays comfortably within screen height even in the worst case.
+    private let maxRows = 6
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 16) {
+            // Summary chips — the idle count lives here (and only here).
+            HStack(spacing: 14) {
+                count(.needsYou, store.needsYou)
                 count(.running, store.running)
                 count(.done, store.done)
-                count(.needsYou, store.needsYou)
+                count(.idle, store.idle)
                 Spacer(minLength: 0)
             }
             .font(.system(size: 12, weight: .semibold, design: .rounded))
 
-            if store.hasAny {
-                ForEach(groups, id: \.window) { group in
-                    if showWindowHeaders {
-                        Text(group.window.isEmpty ? "window" : group.window)
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.4))
-                            .textCase(.uppercase)
-                            .padding(.top, 4)
-                    }
-                    ForEach(group.agents) { agent in
-                        AgentRow(agent: agent) { onPick(agent) }
-                    }
-                }
-            } else {
-                Text("No active agents")
+            let rows = store.actionable
+            if rows.isEmpty {
+                Text(emptyMessage)
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.4))
                     .padding(.vertical, 4)
+            } else {
+                ForEach(rows.prefix(maxRows)) { agent in
+                    AgentRow(agent: agent) { onPick(agent) }
+                }
+                if rows.count > maxRows {
+                    Text("+\(rows.count - maxRows) more")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .padding(.horizontal, 10)
+                        .padding(.top, 1)
+                }
+            }
+
+            if store.done > 0 {
+                ClearButton(label: "Clear finished", onTap: onClearFinished)
+                    .padding(.top, 2)
             }
         }
         .padding(.horizontal, 18)
@@ -41,17 +61,10 @@ struct RosterDashboardView: View {
         .frame(width: 300, alignment: .leading)
     }
 
-    /// Agents grouped by their Cursor window (project), windows sorted by name.
-    private var groups: [(window: String, agents: [Agent])] {
-        let byWindow = Dictionary(grouping: store.agents, by: { $0.window })
-        return byWindow.keys.sorted().map { key in
-            (window: key, agents: byWindow[key]!.sorted { $0.name < $1.name })
-        }
-    }
-
-    /// Only show the per-window headers when more than one window is present.
-    private var showWindowHeaders: Bool {
-        Set(store.agents.map(\.window)).count > 1
+    /// Shown when nothing is actionable — distinguishes "all quiet" from "you have
+    /// idle terminals sitting around" so the empty notch still says something useful.
+    private var emptyMessage: String {
+        store.idle > 0 ? "Nothing needs you · \(store.idle) idle" : "No active agents"
     }
 
     private func count(_ state: AgentState, _ n: Int) -> some View {
@@ -83,5 +96,28 @@ private struct AgentRow: View {
         .background(Color.white.opacity(0.001))   // keep row fully hit-testable
         .contentShape(Rectangle())
         .overlay(ClickCatcher(onClick: onPick))    // click row → focus that tab
+    }
+}
+
+/// A small text button styled to live inside the dashboard's padded content (not a
+/// flush-bottom footer — those get clipped by the notch's rounded mask).
+private struct ClearButton: View {
+    let label: String
+    var onTap: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "xmark.circle")
+                .font(.system(size: 10.5))
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white.opacity(0.5))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .overlay(ClickCatcher(onClick: onTap))
     }
 }

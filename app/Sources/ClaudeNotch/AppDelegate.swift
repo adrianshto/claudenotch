@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let roster = RosterStore()
     private var dashboard: DashboardController!
     private var detector: HoverDetector!
+    private var sweeper: NotchWindowSweeper!
     private var detectorHovered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,12 +16,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: ["focusMute": true])
         // No system permissions needed: window-raising is done by the Cursor extension
         // (`cursor --reuse-window <folder>`), which we reach via the focus POST below.
-        dashboard = DashboardController(store: roster) { [weak self] agent in
-            guard let self else { return }
-            Log.write("dashboard pick: \(agent.name) session=\(agent.id) window=\(agent.window) → focus")
-            Focus.request(sessionId: agent.id)
-            self.dashboard.hide()
-        }
+        dashboard = DashboardController(
+            store: roster,
+            onPick: { [weak self] agent in
+                guard let self else { return }
+                Log.write("dashboard pick: \(agent.name) session=\(agent.id) window=\(agent.window) → focus")
+                Focus.request(sessionId: agent.id)
+                self.dashboard.hide()
+            },
+            onClearFinished: { [weak self] in
+                Log.write("dashboard: clear finished")
+                Task { @MainActor in
+                    guard let self else { return }
+                    // Apply the authoritative roster the hub returns; on failure (nil)
+                    // leave the dashboard as-is rather than blanking it.
+                    if let fresh = await Hub.clearFinished() {
+                        self.roster.apply(fresh)
+                    }
+                }
+            }
+        )
 
         // Summon-on-hover: flick the cursor to the notch → fetch the live roster
         // and drop the dashboard down.
@@ -37,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         detector.onExit = { [weak self] in self?.detectorHovered = false }
         detector.start()
+
+        // Close notch windows DynamicNotchKit leaves on screen after display changes
+        // (see NotchWindowSweeper) — what used to pile up into hundreds of windows.
+        sweeper = NotchWindowSweeper(surfaces: [notifier, dashboard])
+        sweeper.start()
 
         // Pull pings from the extension instead of being launched with a URL (which would
         // foreground us and steal key focus from whatever the user is typing).
@@ -134,6 +154,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             message: "Test ping — click me to confirm taps work.",
             systemImage: "bell.fill"
         ) { Log.write("test ping tapped") }
+    }
+
+    /// Menu action: clear finished/idle sessions on the hub, then refresh the store so
+    /// a subsequently-summoned dashboard reflects it immediately.
+    func clearFinished() {
+        Log.write("menu: clear finished")
+        Task { @MainActor in
+            if let fresh = await Hub.clearFinished() { self.roster.apply(fresh) }
+        }
     }
 
     private func handle(_ url: URL) {

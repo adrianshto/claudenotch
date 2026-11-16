@@ -136,7 +136,8 @@ App source files: `ClaudeNotchApp` (MenuBarExtra + focus-mute toggle), `AppDeleg
 `Focus.request`), `NotchNotifier`+`NotchContent` (pings),
 `DashboardController`+`RosterDashboardView`+`HoverDetector`+`ScreenNotch`+`RosterFetcher`
 (dashboard), `RosterStore` (Agent/AgentState model), `ClickCatcher` (AppKit tap target
-that works in non-key notch panels), `Focus` (POST /focus), `Log`.
+that works in non-key notch panels), `NotchWindowSweeper` (closes hidden notch windows
+after display changes), `Focus` (POST /focus), `Log`.
 
 ✅ The app is **installed**: it runs from `/Applications/ClaudeNotch.app` and auto-starts
 at login (LaunchAgent `com.casper.claudenotch`). This `app/` folder is **source only** —
@@ -160,6 +161,15 @@ editing/rebuilding here is safe; `build-app.sh` redeploys the fresh build to /Ap
 - **Bundle id** `com.casper.claudenotch`; **extension id** `local.claude-notch`.
 - **Toolchain**: building the app needs **full Xcode** (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`),
   not the standalone CLT — DynamicNotchKit uses SwiftUI macros (`@Entry`/`#Preview`) that ship only with Xcode.
+- **One DynamicNotch per surface, created once and reused** (`NotchNotifier` swaps ping
+  content via `PingModel`; `DashboardController` has its own). NEVER create a DynamicNotch
+  per ping: DynamicNotchKit 1.1.0 never frees one (its screen-change observer Task holds it
+  forever) and, on every display change, re-creates and orders on screen a 756×491
+  invisible screen-saver-level window for EACH instance, hidden or not. Per-ping instances
+  leaked 642 such windows in a day (WindowServer 1.2 → 5.8 GB, laggy Space swipes; fixed
+  2026-11-17). `NotchWindowSweeper` closes a hidden surface's window ~1s after each display change
+  and logs `window sweep … closed N` to app.log when it does. Count the
+  app's windows with the one-liner in "Test / debug".
 
 ## Rebuild / reinstall after editing source
 
@@ -188,6 +198,8 @@ for iterating on one piece after it's already installed:
 - `curl -s http://127.0.0.1:39247/pings` — drains the queued pings (the app's long-poll;
   may hold ~25s if none are pending).
 - App log: `~/.claude-notch/app.log`; extension log: `~/.claude-notch/ext.log`.
+- Count the app's windows (should stay at ~1–3; hundreds = the notch window leak is back):
+  `swift -e 'import CoreGraphics; let l = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as! [[String: Any]]; print(l.filter { ($0[kCGWindowOwnerName as String] as? String) == "Claude Notch" }.count)'`
 - Extension output channel: ⌘⇧P → "Claude Notch: Show Status".
 - Dev toggle the dashboard: `open "claudenotch://dashboard"`.
 - Fire a test notch: 🔔 menu → "Test Notch Ping" (the `claudenotch://notify` URL path is
